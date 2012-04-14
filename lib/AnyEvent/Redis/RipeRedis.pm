@@ -19,7 +19,7 @@ use fields qw(
   subs
 );
 
-our $VERSION = '0.804101';
+our $VERSION = '0.804102';
 
 use AnyEvent::Handle;
 use Encode qw( find_encoding is_utf8 );
@@ -624,7 +624,6 @@ AnyEvent::Redis::RipeRedis - Non-blocking Redis client with auto reconnect featu
     },
   );
 
-
 =head2 host
 
 Server hostname (default: 127.0.0.1)
@@ -822,7 +821,6 @@ Eugene Ponizovsky, E<lt>ponizovsky@gmail.comE<gt>
 =item Vadim Vlasov
 
 =back
-
 
 =head1 COPYRIGHT AND LICENSE
 
