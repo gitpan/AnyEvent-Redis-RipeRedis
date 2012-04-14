@@ -24,4 +24,4 @@ requires:
   Scalar::Util: 0
   Test::MockObject: 0
   Test::More: 0
-version: 0.804102
+version: 0.804103

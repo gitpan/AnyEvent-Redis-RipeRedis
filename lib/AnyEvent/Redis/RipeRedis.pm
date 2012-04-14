@@ -19,7 +19,7 @@ use fields qw(
   subs
 );
 
-our $VERSION = '0.804102';
+our $VERSION = '0.804103';
 
 use AnyEvent::Handle;
 use Encode qw( find_encoding is_utf8 );
