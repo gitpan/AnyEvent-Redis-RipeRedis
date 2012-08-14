@@ -1,5 +1,5 @@
 ---
-abstract: 'Non-blocking Redis client with auto reconnect feature'
+abstract: 'Non-blocking Redis client with reconnection feature'
 author:
   - 'Eugene Ponizovsky <ponizovsky@gmail.com>'
 build_requires:
@@ -24,4 +24,4 @@ requires:
   Scalar::Util: 0
   Test::MockObject: 0
   Test::More: 0
-version: 0.807300
+version: 0.807301

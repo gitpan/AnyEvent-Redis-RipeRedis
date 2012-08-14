@@ -1,5 +1,5 @@
 {
-   "abstract" : "Non-blocking Redis client with auto reconnect feature",
+   "abstract" : "Non-blocking Redis client with reconnection feature",
    "author" : [
       "Eugene Ponizovsky <ponizovsky@gmail.com>"
    ],
@@ -42,5 +42,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.807300"
+   "version" : "0.807301"
 }
