@@ -19,14 +19,13 @@ use fields qw(
   connected
   authing
   authed
-  finalized
   buffer
   processing_queue
   sub_lock
   subs
 );
 
-our $VERSION = '1.006';
+our $VERSION = '1.007';
 
 use AnyEvent::Handle;
 use Encode qw( find_encoding is_utf8 );
@@ -83,7 +82,6 @@ sub new {
   $self->{handle} = undef;
   $self->{connected} = 0;
   $self->{authing} = 0;
-  $self->{finalized} = 0;
   $self->{buffer} = [];
   $self->{processing_queue} = [];
   $self->{sub_lock} = 0;
@@ -102,11 +100,11 @@ sub disconnect {
   my __PACKAGE__ $self = shift;
 
   my $was_connected = $self->{connected};
+  $self->{handle}->destroy();
   undef( $self->{handle} );
   $self->{connected} = 0;
   $self->{authing} = 0;
   $self->{authed} = 0;
-  $self->{finalized} = 1;
   $self->_abort_all( 'Connection closed by client' );
   if ( $was_connected and defined( $self->{on_disconnect} ) ) {
     $self->{on_disconnect}->();
@@ -133,15 +131,10 @@ sub _validate_new {
     $params->{reconnect} = 1;
   }
   if ( defined( $params->{encoding} ) ) {
-    if ( ref( $params->{encoding} ) ) {
-      croak "Encoding name must be a scalar";
-    }
-    elsif ( $params->{encoding} ne '' ) {
-      my $enc = $params->{encoding};
-      $params->{encoding} = find_encoding( $enc );
-      if ( !defined( $params->{encoding} ) ) {
-        croak "Encoding '$enc' not found";
-      }
+    my $enc = $params->{encoding};
+    $params->{encoding} = find_encoding( $enc );
+    if ( !defined( $params->{encoding} ) ) {
+      croak "Encoding '$enc' not found";
     }
   }
   foreach my $name (
@@ -157,10 +150,7 @@ sub _validate_new {
 
   # Set defaults
   foreach my $name ( keys( %DEFAULTS ) ) {
-    if (
-      !defined( $params->{$name} )
-        or ref( $params->{$name} ) or $params->{$name} eq ''
-        ) {
+    if ( !defined( $params->{$name} ) ) {
       $params->{$name} = $DEFAULTS{$name};
     }
   }
@@ -241,6 +231,7 @@ sub _on_connect_error {
   return sub {
     my $err = pop;
 
+    $self->{handle}->destroy();
     undef( $self->{handle} );
     $err = "Can't connect to $self->{host}:$self->{port}: $err";
     $self->_abort_all( $err );
@@ -254,6 +245,7 @@ sub _on_eof {
   weaken( $self );
 
   return sub {
+    $self->{handle}->destroy();
     undef( $self->{handle} );
     $self->{connected} = 0;
     $self->{authing} = 0;
@@ -273,6 +265,7 @@ sub _on_error {
   return sub {
     my $err = pop;
 
+    $self->{handle}->destroy();
     undef( $self->{handle} );
     $self->{connected} = 0;
     $self->{authing} = 0;
@@ -303,12 +296,6 @@ sub _exec_command {
     %{$params},
   };
 
-  if ( $self->{finalized} ) {
-    $cmd->{on_error}->( "Can't handle the command '$cmd->{name}'."
-        . ' Connection closed by client' );
-    return;
-  }
-
   if ( exists( $SUB_ACTION_CMDS{$cmd->{name}} ) ) {
     if ( $self->{sub_lock} ) {
       $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi' command."
@@ -322,9 +309,6 @@ sub _exec_command {
   }
   elsif ( $cmd->{name} eq 'exec' ) {
     $self->{sub_lock} = 0;
-  }
-  elsif ( $cmd->{name} eq 'quit' ) {
-    $self->{finalized} = 1;
   }
 
   if ( !defined( $self->{handle} ) ) {
@@ -450,31 +434,27 @@ sub _on_read {
   return sub {
     my $hdl = shift;
 
-    while ( 1 ) {
+    while ( defined( $hdl->{rbuf} ) and $hdl->{rbuf} ne '' ) {
       if ( defined( $bulk_len ) ) {
         my $bulk_eol_len = $bulk_len + EOL_LEN;
-        if (
-          length( substr( $hdl->{rbuf}, 0, $bulk_eol_len ) )
-              == $bulk_eol_len
-            ) {
-          my $data = substr( $hdl->{rbuf}, 0, $bulk_len, '' );
-          substr( $hdl->{rbuf}, 0, EOL_LEN, '' );
-          chomp( $data );
-          if ( defined( $self->{encoding} ) ) {
-            $data = $self->{encoding}->decode( $data );
-          }
-          undef( $bulk_len );
-
-          return 1 if $cb->( $data );
-        }
-        else {
+        if ( length( $hdl->{rbuf} ) < $bulk_eol_len ) {
           return;
         }
+        my $data = substr( $hdl->{rbuf}, 0, $bulk_len, '' );
+        substr( $hdl->{rbuf}, 0, EOL_LEN, '' );
+        chomp( $data );
+        if ( defined( $self->{encoding} ) ) {
+          $data = $self->{encoding}->decode( $data );
+        }
+        undef( $bulk_len );
+
+        return 1 if $cb->( $data );
       }
-
-      my $eol_pos = index( $hdl->{rbuf}, EOL );
-
-      if ( $eol_pos >= 0 ) {
+      else {
+        my $eol_pos = index( $hdl->{rbuf}, EOL );
+        if ( $eol_pos < 0 ) {
+          return;
+        }
         my $data = substr( $hdl->{rbuf}, 0, $eol_pos, '' );
         my $type = substr( $data, 0, 1, '' );
         substr( $hdl->{rbuf}, 0, EOL_LEN, '' );
@@ -506,9 +486,6 @@ sub _on_read {
             return 1 if $cb->( [] );
           }
         }
-      }
-      else {
-        return;
       }
     }
   };
@@ -1002,8 +979,8 @@ the parameter C<port> you must specify the path to the socket.
 
 When the connection to the server is no longer needed you can close it in three
 ways: send C<QUIT> command, call method C<disconnect()>, or you can just "forget"
-any references to an AnyEvent::Redis::RipeRedis object. In the third case client
-don't calls further callbacks, including 'on_disconnect' callback.
+any references to an AnyEvent::Redis::RipeRedis object, but in this case client
+don't calls C<on_disconnect> callback.
 
   $redis->quit(
     on_done => sub {
