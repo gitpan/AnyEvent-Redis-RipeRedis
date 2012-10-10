@@ -42,5 +42,17 @@
       }
    },
    "release_status" : "stable",
-   "version" : "1.104"
+   "resources" : {
+      "bugtracker" : {
+         "web" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis/issues"
+      },
+      "homepage" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis",
+      "license" : [
+         "http://dev.perl.org/licenses/"
+      ],
+      "repository" : {
+         "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
+      }
+   },
+   "version" : "1.105"
 }
