@@ -37,7 +37,8 @@
             "Encode" : 0,
             "Scalar::Util" : 0,
             "Test::MockObject" : 0,
-            "Test::More" : 0
+            "Test::More" : 0,
+            "perl" : "5.006000"
          }
       }
    },
@@ -54,5 +55,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.106"
+   "version" : "1.107"
 }

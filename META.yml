@@ -24,9 +24,10 @@ requires:
   Scalar::Util: 0
   Test::MockObject: 0
   Test::More: 0
+  perl: 5.006000
 resources:
   bugtracker: https://github.com/iph0/AnyEvent-Redis-RipeRedis/issues
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.106
+version: 1.107
