@@ -1,5 +1,5 @@
 {
-   "abstract" : "Non-blocking flexible Redis client with reconnect",
+   "abstract" : "Flexible non-blocking Redis client with reconnect",
    "author" : [
       "Eugene Ponizovsky <ponizovsky@gmail.com>"
    ],
@@ -55,5 +55,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.111"
+   "version" : "1.112"
 }
