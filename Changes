@@ -1,5 +1,13 @@
 Revision history for AnyEvent::Redis::RipeRedis.
 
+1.114 Wed Oct 31 14:37:55 2012
+  - Added protection from deep recursion in case of some errors.
+  - Renamed constants (hope no one used them yet):
+    - E_AUTH_REQUIRED renamed to E_OPRN_NOT_PERMITTED.
+    - E_COMMAND_EXEC renamed to E_OPRN_ERROR.
+    - E_CLIENT renamed to E_UNEXPECTED_DATA,
+  - Changes in POD.
+
 1.112 Fri Oct 27 15:30:25 2012
   - POD edited.
 
@@ -12,7 +20,7 @@ Revision history for AnyEvent::Redis::RipeRedis.
   - [FEATURE] Added constructor parameter 'database'.
   - [FEATURE] Added constructor parameter 'lazy'.
   - [BUGFIX] Fixed reconnect error that has been occurred if password was not
-  been required.
+    been required.
   - Changes in POD.
 
 1.109 Fri Oct 20 01:54:40 2012
@@ -51,7 +59,7 @@ Revision history for AnyEvent::Redis::RipeRedis.
 
 1.000 Wed Aug 15 23:24:05 2012
   - [BUGFIX] Now, connection to server closed automatically after destroying
-  last reference on AnyEvent::Redis::RipeRedis object.
+    last reference on AnyEvent::Redis::RipeRedis object.
   - [BUGFIX] Fixed cyclic references.
 
 0.807301 Wed Aug 15 00:52:45 2012
@@ -63,12 +71,12 @@ Revision history for AnyEvent::Redis::RipeRedis.
 
 0.807200 Fri Jun 29 22:12:40 2012
   - [BUGFIX] "on_done" callback now calls at the end of processing of response,
-  to avoid unexpected behavior.
+    to avoid unexpected behavior.
 
 0.807100 Wed Jun 20 10:38:50 2012
   - [BUGFIX] If some error ocurred or if connection was closed, then uncompleted
-  commands will be aborted before calling 'on_error', 'on_connect_error'
-  or 'on_disconnect' callbacks, to avoid unexpected behavior.
+    commands will be aborted before calling 'on_error', 'on_connect_error'
+    or 'on_disconnect' callbacks, to avoid unexpected behavior.
 
 0.807000 Mon Jun 18 14:55:50 2012
   - [FEATURE] Added callback 'on_connect_error' in constructor
@@ -77,18 +85,18 @@ Revision history for AnyEvent::Redis::RipeRedis.
   - [FEATURE] Added public method disconnect()
 
 0.805201 Wed Jun 13 10:14:00 2012
- - Minor fix in POD.
+  - Minor fix in POD.
 
 0.805200 Tue May 29 11:02:30 2012
- - [BUGFIX] Fixed probable race condition in auto-authentication.
+  - [BUGFIX] Fixed probable race condition in auto-authentication.
 
 0.805103 Thu May 17 12:27:05 2012
- - [BUGFIX] Prevented an infinite loop in method _abort_commands() in case, when
- commands was executed in 'on_error' callback wihtout delay.
+  - [BUGFIX] Prevented an infinite loop in method _abort_commands() in case, when
+    commands was executed in 'on_error' callback wihtout delay.
 
 0.805000 Wed May 16 21:20:15 2012
   - [BUGFIX] Automatic authentication now works correctly in case, when Redis
-  server needs some time to load data file in memory.
+    server needs some time to load data file in memory.
 
 0.804106 Sat Apr 14 15:48:46 2012
   - First release.
