@@ -11,17 +11,13 @@ use AnyEvent::Redis::RipeRedis;
 
 my $T_CLASS = 'AnyEvent::Redis::RipeRedis';
 
-my $cv = AnyEvent->condvar();
-
 my $redis = $T_CLASS->new(
   password => 'test',
   lazy => 1,
 );
 
-# Authenticate
-$redis->auth( 'test' );
-
 # Subscribe to channels by name
+my $cv = AnyEvent->condvar();
 my @t_sub_data;
 my @t_sub_msgs;
 $redis->subscribe( qw( ch_foo ch_bar ), {
@@ -43,17 +39,6 @@ $redis->subscribe( qw( ch_foo ch_bar ), {
       ch_name => $ch_name,
       message => $msg,
     } );
-  },
-} );
-$redis->subscribe( 'ch_test', {
-  on_done =>  sub {
-    my $ch_name = shift;
-    my $subs_num = shift;
-
-    push( @t_sub_data, {
-      ch_name => $ch_name,
-      subs_num => $subs_num,
-    } )
   },
 } );
 
@@ -114,12 +99,10 @@ $unsub_timer = AnyEvent->timer(
           ch_pattern => $ch_pattern,
           subs_num => $subs_num,
         } );
-      },
-    } );
 
-    $redis->quit( {
-      on_done => sub {
-        $cv->send();
+        if ( $subs_num == 0 ) {
+          $cv->send();
+        }
       },
     } );
   }
@@ -135,10 +118,6 @@ is_deeply( \@t_sub_data, [
   {
     ch_name => 'ch_bar',
     subs_num => 2,
-  },
-  {
-    ch_name => 'ch_test',
-    subs_num => 3,
   },
 ], 'subscribe' );
 
@@ -156,22 +135,22 @@ is_deeply( \@t_sub_msgs, [
 is_deeply( \@t_unsub_data, [
   {
     ch_name => 'ch_foo',
-    subs_num => 4,
+    subs_num => 3,
   },
   {
     ch_name => 'ch_bar',
-    subs_num => 3,
+    subs_num => 2,
   },
 ], 'unsubscribe' );
 
 is_deeply( \@t_psub_data, [
   {
     ch_pattern => 'info_*',
-    subs_num => 4,
+    subs_num => 3,
   },
   {
     ch_pattern => 'err_*',
-    subs_num => 5,
+    subs_num => 4,
   }
 ], 'psubscribe' );
 
@@ -191,10 +170,12 @@ is_deeply( \@t_psub_msgs, [
 is_deeply( \@t_punsub_data, [
   {
     ch_pattern => 'info_*',
-    subs_num => 2,
+    subs_num => 1,
   },
   {
     ch_pattern => 'err_*',
-    subs_num => 1,
+    subs_num => 0,
   },
 ], 'punsubscribe' );
+
+$redis->disconnect();

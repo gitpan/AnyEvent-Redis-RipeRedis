@@ -34,6 +34,7 @@
          "requires" : {
             "AnyEvent" : 0,
             "Carp" : 0,
+            "Digest::SHA1" : 0,
             "Encode" : 0,
             "Scalar::Util" : 0,
             "Test::MockObject" : 0,
@@ -55,5 +56,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.115"
+   "version" : "1.200"
 }
