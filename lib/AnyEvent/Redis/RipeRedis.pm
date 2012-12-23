@@ -11,6 +11,7 @@ use fields qw(
   password
   database
   connection_timeout
+  read_timeout
   reconnect
   encoding
   on_connect
@@ -29,7 +30,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.204';
+our $VERSION = '1.210';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -42,7 +43,7 @@ BEGIN {
   our @EXPORT_OK = qw( E_CANT_CONN E_LOADING_DATASET E_IO
       E_CONN_CLOSED_BY_REMOTE_HOST E_CONN_CLOSED_BY_CLIENT E_NO_CONN
       E_INVALID_PASS E_OPRN_NOT_PERMITTED E_OPRN_ERROR E_UNEXPECTED_DATA
-      E_NO_SCRIPT );
+      E_NO_SCRIPT E_READ_TIMEDOUT );
 
   our %EXPORT_TAGS = (
     err_codes => \@EXPORT_OK,
@@ -66,6 +67,7 @@ use constant {
   E_OPRN_ERROR => 9,
   E_UNEXPECTED_DATA => 10,
   E_NO_SCRIPT => 11,
+  E_READ_TIMEDOUT => 12,
 
   # Command status
   S_NEED_PERFORM => 1,
@@ -104,6 +106,7 @@ sub new {
   $self->{password} = $params->{password};
   $self->{database} = $params->{database};
   $self->{connection_timeout} = $params->{connection_timeout};
+  $self->{read_timeout} = $params->{read_timeout};
   $self->{reconnect} = $params->{reconnect};
   $self->{encoding} = $params->{encoding};
   $self->{on_connect} = $params->{on_connect};
@@ -126,6 +129,68 @@ sub new {
   }
 
   return $self;
+}
+
+####
+sub multi {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'multi', @_ );
+  $self->{_sub_lock} = 1;
+  $self->_execute_cmd( $cmd );
+
+  return;
+}
+
+####
+sub exec {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'exec', @_ );
+  $self->{_sub_lock} = 0;
+  $self->_execute_cmd( $cmd );
+
+  return;
+}
+
+####
+sub subscribe {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'subscribe', @_ );
+  $self->_execute_sub_cmd( $cmd );
+
+  return;
+}
+
+####
+sub psubscribe {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'psubscribe', @_ );
+  $self->_execute_sub_cmd( $cmd );
+
+  return;
+}
+
+####
+sub unsubscribe {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'unsubscribe', @_ );
+  $self->_execute_sub_cmd( $cmd );
+
+  return;
+}
+
+####
+sub punsubscribe {
+  my __PACKAGE__ $self = shift;
+
+  my $cmd = $self->_prepare_cmd( 'punsubscribe', @_ );
+  $self->_execute_sub_cmd( $cmd );
+
+  return;
 }
 
 ####
@@ -154,17 +219,9 @@ sub eval_cached {
 sub disconnect {
   my __PACKAGE__ $self = shift;
 
-  if ( defined( $self->{_handle} ) ) {
-    $self->{_handle}->destroy();
-    undef( $self->{_handle} );
-  }
   my $was_connected = $self->{_connected};
-  if ( $was_connected ) {
-    $self->{_connected} = 0;
-    $self->{_auth_st} = S_NEED_PERFORM;
-    $self->{_db_select_st} = S_NEED_PERFORM;
-  }
-  $self->_abort_all( 'Connection closed by client', E_CONN_CLOSED_BY_CLIENT );
+  $self->_reset_state();
+  $self->_abort_cmds( 'Connection closed by client', E_CONN_CLOSED_BY_CLIENT );
   if ( $was_connected and defined( $self->{on_disconnect} ) ) {
     $self->{on_disconnect}->();
   }
@@ -183,24 +240,24 @@ sub _validate_new_params {
       ) {
     confess 'Connection timeout must be a positive number';
   }
+
+  if (
+    defined( $params->{read_timeout} )
+      and ( !looks_like_number( $params->{read_timeout} )
+        or $params->{read_timeout} < 0 )
+      ) {
+    confess 'Read timeout must be a positive number';
+  }
+
   if ( !exists( $params->{reconnect} ) ) {
     $params->{reconnect} = 1;
   }
+
   if ( defined( $params->{encoding} ) ) {
     my $enc = $params->{encoding};
     $params->{encoding} = find_encoding( $enc );
     if ( !defined( $params->{encoding} ) ) {
       confess "Encoding '$enc' not found";
-    }
-  }
-  foreach my $name (
-    qw( on_connect on_disconnect on_connect_error on_error )
-      ) {
-    if (
-      defined( $params->{$name} )
-        and ref( $params->{$name} ) ne 'CODE'
-        ) {
-      confess "'$name' callback must be a code reference";
     }
   }
 
@@ -224,17 +281,15 @@ sub _validate_new_params {
 sub _connect {
   my __PACKAGE__ $self = shift;
 
-  if ( $self->{_lazy_conn_st} ) {
-    $self->{_lazy_conn_st} = 0;
-  }
-
   weaken( $self );
 
   $self->{_handle} = AnyEvent::Handle->new(
     connect => [ $self->{host}, $self->{port} ],
+    rtimeout => $self->{read_timeout},
     on_prepare => $self->_on_prepare(),
     on_connect => $self->_on_connect(),
     on_connect_error => $self->_on_conn_error(),
+    on_rtimeout => $self->_on_rtimeout(),
     on_eof => $self->_on_eof(),
     on_error => $self->_on_error(),
     on_read => $self->_on_read(
@@ -301,15 +356,20 @@ sub _on_conn_error {
   return sub {
     my $err_msg = pop;
 
-    $self->{_handle}->destroy();
-    undef( $self->{_handle} );
-    $err_msg = "Can't connect to $self->{host}:$self->{port}: $err_msg";
-    $self->_abort_all( $err_msg, E_CANT_CONN );
-    if ( defined( $self->{on_connect_error} ) ) {
-      $self->{on_connect_error}->( $err_msg );
-    }
-    else {
-      $self->{on_error}->( $err_msg, E_CANT_CONN );
+    $self->_process_crit_error( "Can't connect to $self->{host}:$self->{port}: "
+        . $err_msg, E_CANT_CONN );
+  };
+}
+
+####
+sub _on_rtimeout {
+  my __PACKAGE__ $self = shift;
+
+  weaken( $self );
+
+  return sub {
+    if ( @{$self->{_processing_queue}} ) {
+      $self->_process_crit_error( 'Read timed out', E_READ_TIMEDOUT );
     }
   };
 }
@@ -321,7 +381,7 @@ sub _on_eof {
   weaken( $self );
 
   return sub {
-    $self->_process_error( 'Connection closed by remote host',
+    $self->_process_crit_error( 'Connection closed by remote host',
         E_CONN_CLOSED_BY_REMOTE_HOST );
   };
 }
@@ -334,26 +394,81 @@ sub _on_error {
 
   return sub {
     my $err_msg = pop;
-    $self->_process_error( $err_msg, E_IO );
+
+    $self->_process_crit_error( $err_msg, E_IO );
   };
 }
 
 ####
-sub _process_error {
+sub _process_crit_error {
   my __PACKAGE__ $self = shift;
   my $err_msg = shift;
   my $err_code = shift;
 
-  $self->{_handle}->destroy();
-  undef( $self->{_handle} );
-  $self->{_connected} = 0;
-  $self->{_auth_st} = S_NEED_PERFORM;
-  $self->{_db_select_st} = S_NEED_PERFORM;
-  $self->_abort_all( $err_msg, $err_code );
-  $self->{on_error}->( $err_msg, $err_code );
-  if ( defined( $self->{on_disconnect} ) ) {
-    $self->{on_disconnect}->();
+  $self->_reset_state();
+  $self->_abort_cmds( $err_msg, $err_code );
+
+  if ( $err_code == E_CANT_CONN ) {
+    if ( defined( $self->{on_connect_error} ) ) {
+      $self->{on_connect_error}->( $err_msg );
+    }
+    else {
+      $self->{on_error}->( $err_msg, $err_code );
+    }
   }
+  else {
+    $self->{on_error}->( $err_msg, $err_code );
+    if ( defined( $self->{on_disconnect} ) ) {
+      $self->{on_disconnect}->();
+    }
+  }
+
+  return;
+}
+
+####
+sub _prepare_cmd {
+  my __PACKAGE__ $self = shift;
+  my $cmd_name = shift;
+  my @args = @_;
+
+  my $cmd;
+  if ( ref( $args[-1] ) eq 'HASH' ) {
+    $cmd = pop( @args );
+  }
+  else {
+    $cmd = {};
+  }
+  $cmd->{name} = $cmd_name,
+  $cmd->{args} = \@args,
+
+  return $cmd;
+}
+
+####
+sub _execute_sub_cmd {
+  my __PACKAGE__ $self = shift;
+  my $cmd = shift;
+
+  if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
+    if ( !defined( $cmd->{on_message} ) ) {
+      confess "'on_message' callback must be specified";
+    }
+  }
+  if ( $self->{_sub_lock} ) {
+    AE::postpone(
+      sub {
+        $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi'"
+            . ' command. First, the transaction must be completed',
+            E_OPRN_ERROR );
+      }
+    );
+
+    return;
+  }
+  $cmd->{resp_remaining} = scalar( @{$cmd->{args}} );
+
+  $self->_execute_cmd( $cmd );
 
   return;
 }
@@ -363,39 +478,15 @@ sub _execute_cmd {
   my __PACKAGE__ $self = shift;
   my $cmd = shift;
 
-  if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
-    if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
-      $cmd = $self->_validate_sub_params( $cmd );
-    }
-    else {
-      $cmd = $self->_validate_cmd_params( $cmd );
-    }
-    if ( $self->{_sub_lock} ) {
-      AE::postpone(
-        sub {
-          $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi'"
-              . ' command. First, the transaction must be completed',
-              E_OPRN_ERROR );
-        }
-      );
-
-      return;
-    }
-    $cmd->{resp_remaining} = scalar( @{$cmd->{args}} );
-  }
-  else {
-    $cmd = $self->_validate_cmd_params( $cmd );
-
-    if ( $cmd->{name} eq 'multi' ) {
-      $self->{_sub_lock} = 1;
-    }
-    elsif ( $cmd->{name} eq 'exec' ) {
-      $self->{_sub_lock} = 0;
-    }
+  if ( !defined( $cmd->{on_error} ) ) {
+    $cmd->{on_error} = $self->{on_error};
   }
 
   if ( !defined( $self->{_handle} ) ) {
     if ( $self->{reconnect} or $self->{_lazy_conn_st} ) {
+      if ( $self->{_lazy_conn_st} ) {
+        $self->{_lazy_conn_st} = 0;
+      }
       $self->_connect();
     }
     else {
@@ -436,49 +527,9 @@ sub _execute_cmd {
 }
 
 ####
-sub _validate_cmd_params {
-  my __PACKAGE__ $self = shift;
-  my $cmd = shift;
-
-  foreach my $name ( qw( on_done on_error ) ) {
-    if (
-      defined( $cmd->{$name} )
-        and ( !ref( $cmd->{$name} ) or ref( $cmd->{$name} ) ne 'CODE' )
-        ) {
-      confess "'$name' callback must be a code reference";
-    }
-  }
-
-  if ( !defined( $cmd->{on_error} ) ) {
-    $cmd->{on_error} = $self->{on_error};
-  }
-
-  return $cmd;
-}
-
-####
-sub _validate_sub_params {
-  my __PACKAGE__ $self = shift;
-  my $cmd = shift;
-
-  $cmd = $self->_validate_cmd_params( $cmd );
-
-  if ( !defined( $cmd->{on_message} ) ) {
-    confess "'on_message' callback must be specified";
-  }
-  elsif (
-    !ref( $cmd->{on_message} )
-      or ref( $cmd->{on_message} ) ne 'CODE'
-      ) {
-    confess "'on_message' callback must be a code reference";
-  }
-
-  return $cmd;
-}
-
-####
 sub _auth {
   my __PACKAGE__ $self = shift;
+
   weaken( $self );
 
   $self->{_auth_st} = S_IN_PROGRESS;
@@ -500,7 +551,7 @@ sub _auth {
       my $err_code = shift;
 
       $self->{_auth_st} = S_NEED_PERFORM;
-      $self->_abort_all( $err_msg, $err_code );
+      $self->_abort_cmds( $err_msg, $err_code );
       $self->{on_error}->( $err_msg, $err_code );
     },
   } );
@@ -511,6 +562,7 @@ sub _auth {
 ####
 sub _select_db {
   my __PACKAGE__ $self = shift;
+
   weaken( $self );
 
   $self->{_db_select_st} = S_IN_PROGRESS;
@@ -527,7 +579,7 @@ sub _select_db {
       my $err_code = shift;
 
       $self->{_db_select_st} = S_NEED_PERFORM;
-      $self->_abort_all( $err_msg, $err_code );
+      $self->_abort_cmds( $err_msg, $err_code );
       $self->{on_error}->( $err_msg, $err_code );
     },
   } );
@@ -621,6 +673,10 @@ sub _on_read {
           else {
             return 1 if $cb->( [] );
           }
+        }
+        else {
+          $self->_process_crit_error( 'Unexpected data type received',
+              E_UNEXPECTED_DATA );
         }
       }
     }
@@ -721,7 +777,7 @@ sub _process_data {
     }
   }
   else {
-    $self->{on_error}->( "Don't known how process response data."
+    $self->_process_crit_error( "Don't known how process response data."
         . ' Command queue is empty', E_UNEXPECTED_DATA );
   }
 
@@ -743,7 +799,7 @@ sub _process_pub_message {
     }
   }
   else {
-    $self->{on_error}->( "Don't known how process published message."
+    $self->_process_crit_error( "Don't known how process published message."
         . " Unknown channel or pattern '$data->[1]'", E_UNEXPECTED_DATA );
   }
 
@@ -783,8 +839,8 @@ sub _process_cmd_error {
     $cmd->{on_error}->( $err_msg, $err_code );
   }
   else {
-    $self->{on_error}->( "Don't known how process error message '$err_msg'."
-        . " Command queue is empty", E_UNEXPECTED_DATA );
+    $self->_process_crit_error( "Don't known how process error message"
+        . " '$err_msg'. Command queue is empty", E_UNEXPECTED_DATA );
   }
 
   return;
@@ -840,22 +896,34 @@ sub _flush_buffer {
 }
 
 ####
-sub _abort_all {
+sub _reset_state {
+  my __PACKAGE__ $self = shift;
+
+  if ( defined( $self->{_handle} ) ) {
+    $self->{_handle}->destroy();
+    undef( $self->{_handle} );
+  }
+  $self->{_connected} = 0;
+  $self->{_auth_st} = S_NEED_PERFORM;
+  $self->{_db_select_st} = S_NEED_PERFORM;
+  $self->{_sub_lock} = 0;
+  $self->{_subs} = {};
+
+  return;
+}
+
+####
+sub _abort_cmds {
   my __PACKAGE__ $self = shift;
   my $err_msg = shift;
   my $err_code = shift;
 
-  $self->{_sub_lock} = 0;
-  $self->{_subs} = {};
-  my @commands;
-  if ( @{$self->{_buffer}} ) {
-    @commands =  @{$self->{_buffer}};
-    $self->{_buffer} = [];
-  }
-  elsif ( @{$self->{_processing_queue}} ) {
-    @commands =  @{$self->{_processing_queue}};
-    $self->{_processing_queue} = [];
-  }
+  my @commands = (
+    @{$self->{_processing_queue}},
+    @{$self->{_buffer}}
+  );
+  $self->{_buffer} = [];
+  $self->{_processing_queue} = [];
   foreach my $cmd ( @commands ) {
     $cmd->{on_error}->( "Command '$cmd->{name}' aborted: $err_msg", $err_code );
   }
@@ -872,15 +940,8 @@ sub AUTOLOAD {
 
   my $sub = sub {
     my __PACKAGE__ $self = shift;
-    my @args = @_;
 
-    my $cmd = {};
-    if ( ref( $args[-1] ) eq 'HASH' ) {
-      $cmd = pop( @args );
-    }
-    $cmd->{name} = $cmd_name,
-    $cmd->{args} = \@args,
-
+    my $cmd = $self->_prepare_cmd( $cmd_name, @_ );
     $self->_execute_cmd( $cmd );
 
     return;
@@ -917,19 +978,15 @@ feature
     port => '6379',
     password => 'your_password',
     encoding => 'utf8',
-
     on_connect => sub {
       print "Connected to Redis server\n";
     },
-
     on_disconnect => sub {
       print "Disconnected from Redis server\n";
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       warn "$err_msg. Error code: $err_code\n";
     },
   );
@@ -937,16 +994,12 @@ feature
   # Set value
   $redis->set( 'foo', 'Some string', {
     on_done => sub {
-      my $data = shift;
-
-      print "$data\n";
+      print "SET is done\n";
       $cv->send();
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       $cv->croak( "$err_msg. Error code: $err_code" );
     }
   } );
@@ -958,8 +1011,7 @@ feature
 =head1 DESCRIPTION
 
 AnyEvent::Redis::RipeRedis is a non-blocking flexible Redis client with reconnect
-feature. It supports subscriptions, transactions, has simple API and it faster
-than AnyEvent::Redis.
+feature. It supports subscriptions, transactions and has simple API.
 
 Requires Redis 1.2 or higher, and any supported event loop.
 
@@ -974,26 +1026,22 @@ Requires Redis 1.2 or higher, and any supported event loop.
     database => 7,
     lazy => 1,
     connection_timeout => 5,
+    read_timeout => 5,
     reconnect => 1,
     encoding => 'utf8',
-
     on_connect => sub {
       print "Connected to Redis server\n";
     },
-
     on_disconnect => sub {
       print "Disconnected from Redis server\n";
     },
-
     on_connect_error => sub {
       my $err_msg = shift;
       warn "$err_msg\n";
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       warn "$err_msg. Error code: $err_code\n";
     },
   );
@@ -1011,21 +1059,28 @@ Server port (default: 6379)
 =item password
 
 Authentication password. If it specified, then C<AUTH> command will be send
-immediately to the server after successfully connection and after every
-successfully reconnection.
+immediately to the server after connection and after every reconnection.
 
 =item database
 
 Database index. If it set, then client will be switched to specified database
-immediately after successfully connection and after every successfully
-reconnection.
+immediately after connection and after every reconnection.
 
 Default database index is C<0>.
 
 =item connection_timeout
 
-Connection timeout. If after this timeout client could not connect to the server,
-callback C<on_error> is called. By default used kernel's connection timeout.
+If after this timeout client could not connect to the server, callback
+C<on_error> is called with error code C<E_CANT_CONN>.
+
+By default used kernel's connection timeout.
+
+=item read_timeout
+
+If after this timeout client do not received response from the server on any
+command, callback C<on_error> is called with error code C<E_READ_TIMEOUT>.
+
+Not set by default.
 
 =item lazy
 
@@ -1062,7 +1117,7 @@ Not set by default.
 
 Callback C<on_connect_error> is called, when the connection could not be
 established. If this collback isn't specified, then C<on_error> callback is
-called.
+called with error code C<E_CANT_CONN>.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
@@ -1073,7 +1128,9 @@ client just print error message to C<STDERR>.
 
 =head1 COMMAND EXECUTION
 
-=head2 <command>( [ @args[, \%params ] ] )
+=head2 <command>( [ @args[, \%callbacks ] ] )
+
+Full list of Redis commands can be found L<here|http://redis.io/commands>.
 
   # Set value
   $redis->set( 'foo', 'Some string' );
@@ -1082,7 +1139,6 @@ client just print error message to C<STDERR>.
   $redis->incr( 'bar', {
     on_done => sub {
       my $data = shift;
-
       print "$data\n";
     },
   } );
@@ -1091,27 +1147,22 @@ client just print error message to C<STDERR>.
   $redis->lrange( 'list', 0, -1, {
     on_done => sub {
       my $data = shift;
-
-      foreach my $val ( @{ $data } ) {
+      foreach my $val ( @{$data}  ) {
         print "$val\n";
       }
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       $cv->croak( "$err_msg. Error code: $err_code" );
     },
   } );
-
-Full list of Redis commands can be found here: L<http://redis.io/commands>
 
 =over
 
 =item on_done => $cb->( [ $data ] )
 
-Callback C<on_done> is called, when response successfully received.
+Callback C<on_done> is called, when current operation is done.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
@@ -1119,31 +1170,64 @@ Callback C<on_error> is called, when any error occurred.
 
 =back
 
+=head1 TRANSACTIONS
+
+Detailed information abount Redis transactions can be found
+L<here|http://redis.io/topics/transactions>.
+
+=head2 multi( [ \%callbacks ] )
+
+Marks the start of a transaction block. Subsequent commands will be queued for
+atomic execution using C<EXEC>.
+
+=head2 exec( [ \%callbacks ] )
+
+Executes all previously queued commands in a transaction and restores the
+connection state to normal. When using C<WATCH>, C<EXEC> will execute commands
+only if the watched keys were not modified.
+
+=head2 discard( [ \%callbacks ] )
+
+Flushes all previously queued commands in a transaction and restores the
+connection state to normal.
+
+If C<WATCH> was used, C<DISCARD> unwatches all keys.
+
+=head2 watch( @keys[, \%callbacks ] )
+
+Marks the given keys to be watched for conditional execution of a transaction.
+
+=head2 unwatch( [ \%callbacks ] )
+
+Forget about all watched keys.
+
 =head1 SUBSCRIPTIONS
 
-=head2 subscribe( @channels[, \%params ] )
+Detailed information about Redis Pub/Sub can be found
+L<here|http://redis.io/topics/pubsub>
 
-Subscribe to channels by name.
+=head2 subscribe( @channels[, \%callbacks ] )
+
+Subscribes the client to the specified channels.
+
+Once the client enters the subscribed state it is not supposed to issue any
+other commands, except for additional C<SUBSCRIBE>, C<PSUBSCRIBE>, C<UNSUBSCRIBE>
+and C<PUNSUBSCRIBE> commands.
 
   $redis->subscribe( qw( ch_foo ch_bar ), {
     on_done =>  sub {
       my $ch_name = shift;
       my $subs_num = shift;
-
       print "Subscribed: $ch_name. Active: $subs_num\n";
     },
-
     on_message => sub {
       my $ch_name = shift;
       my $msg = shift;
-
       print "$ch_name: $msg\n";
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       $cv->croak( "$err_msg. Error code: $err_code" );
     },
   } );
@@ -1152,42 +1236,37 @@ Subscribe to channels by name.
 
 =item on_done => $cb->( $ch_name, $sub_num )
 
-Callback C<on_done> is called, when subscription is done.
+Callback C<on_done> is called, when subscription operation is done.
 
 =item on_message => $cb->( $ch_name, $msg )
 
-Callback C<on_message> is called, when published message is successfully received.
+Callback C<on_message> is called, when published message is received.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when any error occurred.
+Callback C<on_error> is called, when subscription operation failed.
 
 =back
 
-=head2 psubscribe( @patterns[, \%params ] )
+=head2 psubscribe( @patterns[, \%callbacks ] )
 
-Subscribe to group of channels by pattern.
+Subscribes the client to the given patterns.
 
   $redis->psubscribe( qw( info_* err_* ), {
     on_done =>  sub {
       my $ch_pattern = shift;
       my $subs_num = shift;
-
       print "Subscribed: $ch_pattern. Active: $subs_num\n";
     },
-
     on_message => sub {
       my $ch_name = shift;
       my $msg = shift;
       my $ch_pattern = shift;
-
       print "$ch_name ($ch_pattern): $msg\n";
     },
-
     on_error => sub {
       my $err_msg = shift;
       my $err_code = shift;
-
       $cv->croak( "$err_msg. Error code: $err_code" );
     },
   } );
@@ -1196,83 +1275,39 @@ Subscribe to group of channels by pattern.
 
 =item on_done => $cb->( $ch_pattern, $sub_num )
 
-Callback C<on_done> is called, when subscription is done.
+Callback C<on_done> is called, when subscription operation is done.
 
 =item on_message => $cb->( $ch_name, $msg, $ch_pattern )
 
-Callback C<on_message> is called, when published message is successfully received.
+Callback C<on_message> is called, when published message is received.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when any error occurred.
+Callback C<on_error> is called, when subscription operation failed.
 
 =back
 
+=head2 publish( $channel, $message[, \%callbacks ] )
 
-=head2 unsubscribe( @channels[, \%params ] )
+Posts a message to the given channel.
 
-Unsubscribe from channels by name.
+=head2 unsubscribe( [ @channels ][, \%callbacks ] )
 
-  $redis->unsubscribe( qw( ch_foo ch_bar ), {
-    on_done => sub {
-      my $ch_name = shift;
-      my $subs_num = shift;
+Unsubscribes the client from the given channels, or from all of them if none
+is given.
 
-      print "Unsubscribed: $ch_name. Active: $subs_num\n";
-    },
+When no channels are specified, the client is unsubscribed from all the
+previously subscribed channels. In this case, a message for every unsubscribed
+channel will be sent to the client.
 
-    on_error => sub {
-      my $err_msg = shift;
-      my $err_code = shift;
+=head2 punsubscribe( [ @patterns ][, \%callbacks ] )
 
-      $cv->croak( "$err_msg. Error code: $err_code" );
-    },
-  } );
+Unsubscribes the client from the given patterns, or from all of them if none
+is given.
 
-=over
-
-=item on_done => $cb->( $ch_name, $sub_num )
-
-Callback C<on_done> is called, when unsubscription is done.
-
-=item on_error => $cb->( $err_msg, $err_code )
-
-Callback C<on_error> is called, when any error occurred.
-
-=back
-
-=head2 punsubscribe( @patterns[, \%params ] )
-
-Unsubscribe from group of channels by pattern.
-
-  $redis->punsubscribe( qw( info_* err_* ), {
-    on_done => sub {
-      my $ch_pattern = shift;
-      my $subs_num = shift;
-
-      print "Unsubscribed: $ch_pattern. Active: $subs_num\n";
-    },
-
-    on_error => sub {
-      my $err_msg = shift;
-      my $err_code = shift;
-
-      $cv->croak( "$err_msg. Error code: $err_code" );
-    },
-  } );
-
-=over
-
-=item on_done => $cb->( $ch_pattern, $sub_num )
-
-Callback C<on_done> is called, when unsubscription is done.
-
-=item on_error => $cb->( $err_msg, $err_code )
-
-Callback C<on_error> is called, when any error occurred.
-
-=back
-
+When no patters are specified, the client is unsubscribed from all the
+previously subscribed patterns. In this case, a message for every unsubscribed
+pattern will be sent to the client.
 
 =head1 CONNECTION VIA UNIX-SOCKET
 
@@ -1291,7 +1326,7 @@ Redis 2.6 and higher support execution of the Lua scripts on the server side.
 To execute a Lua script you can use one of the commands C<EVAL> or C<EVALSHA>,
 or you can use special method C<eval_cached()>.
 
-=head2 eval_cached( $script, $numkeys[, [ @keys, ] [ @args, ] \%params ] );
+=head2 eval_cached( $script, $numkeys[, [ @keys, ] [ @args, ] \%callbacks ] );
 
 When you call C<eval_cached()> method, client first generate SHA1 hash for the
 Lua script and cache it in memory. Then client optimistically send C<EVALSHA>
@@ -1305,8 +1340,7 @@ generate SHA1 hash for this script repeatedly, it gets hash from cache.
       2, 'key1', 'key2', 'first', 'second', {
     on_done => sub {
       my $data = shift;
-
-      foreach my $val ( @{ $data } ) {
+      foreach my $val ( @{$data}  ) {
         print "$val\n";
       }
     }
@@ -1314,19 +1348,13 @@ generate SHA1 hash for this script repeatedly, it gets hash from cache.
 
 =head1 ERROR CODES
 
-Error codes can be used for programmatic handling of errors.
+Every time when C<on_error> callback is called, current error code passed to it
+in second argument. Error codes can be used for programmatic handling of errors.
 
-  1  - E_CANT_CONN
-  2  - E_LOADING_DATASET
-  3  - E_IO
-  4  - E_CONN_CLOSED_BY_REMOTE_HOST
-  5  - E_CONN_CLOSED_BY_CLIENT
-  6  - E_NO_CONN
-  7  - E_INVALID_PASS
-  8  - E_OPRN_NOT_PERMITTED
-  9  - E_OPRN_ERROR
-  10 - E_UNEXPECTED_DATA
-  11 - E_NO_SCRIPT
+L<AnyEvent::Redis::RipeRedis> provides constants of error codes, that can be
+imported and used in expressions.
+
+  use AnyEvent::Redis::RipeRedis qw( :err_codes );
 
 =over
 
@@ -1340,7 +1368,7 @@ Redis is loading the dataset in memory.
 
 =item E_IO
 
-Input/Output operation error. Connection closed.
+Input/Output operation error. On this error client close the connection.
 
 =item E_CONN_CLOSED_BY_REMOTE_HOST
 
@@ -1350,13 +1378,13 @@ Connection closed by remote host.
 
 Connection closed unexpectedly by client.
 
-Error occur, if at time of disconnection in client queue were uncompleted commands.
+Error occurs, if at time of disconnection in client queue were uncompleted commands.
 
 =item E_NO_CONN
 
 No connection to the server.
 
-Error occur, if at time of command execution connection has been closed by any
+Error occurs, if at time of command execution connection has been closed by any
 reason and parameter C<reconnect> was set to FALSE.
 
 =item E_INVALID_PASS
@@ -1365,7 +1393,7 @@ Invalid password.
 
 =item E_OPRN_NOT_PERMITTED
 
-Operation not permitted. Authentication required.
+Operation not permitted.
 
 =item E_OPRN_ERROR
 
@@ -1379,11 +1407,11 @@ Client received unexpected data from server.
 
 No matching script. Use C<EVAL> command.
 
+=item E_READ_TIMEDOUT
+
+Read timed out. On this error client close the connection.
+
 =back
-
-To use these constants you have to import them.
-
-  use AnyEvent::Redis::RipeRedis qw( :err_codes );
 
 =head1 DISCONNECTION
 
