@@ -18,7 +18,7 @@ no_index:
     - t
     - inc
 requires:
-  AnyEvent: 0
+  AnyEvent: 6.01
   Carp: 0
   Digest::SHA1: 0
   Encode: 0
@@ -31,4 +31,4 @@ resources:
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.211
+version: 1.212
