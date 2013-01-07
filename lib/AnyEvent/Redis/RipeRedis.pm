@@ -30,7 +30,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.212';
+our $VERSION = '1.220';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -97,7 +97,7 @@ sub new {
   my $proto = shift;
   my $params = { @_ };
 
-  $params = $proto->_validate_new_params( $params );
+  $params = $proto->_vld_new_params( $params );
 
   my __PACKAGE__ $self = fields::new( $proto );
 
@@ -108,7 +108,7 @@ sub new {
   $self->{connection_timeout} = $params->{connection_timeout};
   $self->{read_timeout} = $params->{read_timeout};
   $self->{reconnect} = $params->{reconnect};
-  $self->{encoding} = $params->{encoding};
+  $self->encoding( $params->{encoding} );
   $self->{on_connect} = $params->{on_connect};
   $self->{on_disconnect} = $params->{on_disconnect};
   $self->{on_connect_error} = $params->{on_connect_error};
@@ -123,6 +123,7 @@ sub new {
   $self->{_processing_queue} = [];
   $self->{_sub_lock} = 0;
   $self->{_subs} = {};
+
 
   if ( !$self->{_lazy_conn_st} ) {
     $self->_connect();
@@ -230,51 +231,166 @@ sub disconnect {
 }
 
 ####
-sub _validate_new_params {
-  my $params = pop;
+sub connection_timeout {
+  my __PACKAGE__ $self = shift;
 
-  if (
-    defined( $params->{connection_timeout} )
-      and ( !looks_like_number( $params->{connection_timeout} )
-        or $params->{connection_timeout} < 0 )
-      ) {
-    confess 'Connection timeout must be a positive number';
+  if ( @_ ) {
+    $self->{connection_timeout} = $self->_vld_conn_timeout( shift );
   }
 
-  if (
-    defined( $params->{read_timeout} )
-      and ( !looks_like_number( $params->{read_timeout} )
-        or $params->{read_timeout} < 0 )
-      ) {
-    confess 'Read timeout must be a positive number';
+  return $self->{connection_timeout};
+}
+
+####
+sub read_timeout {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{read_timeout} = $self->_vld_read_timeout( shift );
   }
+
+  return $self->{read_timeout};
+}
+
+####
+sub reconnect {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{reconnect} = shift;
+  }
+
+  return $self->{reconnect};
+}
+
+####
+sub encoding {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    my $enc = shift;
+
+    if ( defined( $enc ) ) {
+      $self->{encoding} = find_encoding( $enc );
+      if ( !defined( $self->{encoding} ) ) {
+        confess "Encoding '$enc' not found";
+      }
+    }
+    else {
+      undef( $self->{encoding} );
+    }
+  }
+
+  return $self->{encoding};
+}
+
+####
+sub on_connect {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{on_connect} = shift;
+  }
+
+  return $self->{on_connect};
+}
+
+####
+sub on_disconnect {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{on_disconnect} = shift;
+  }
+
+  return $self->{on_disconnect};
+}
+
+####
+sub on_connect_error {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{on_connect_error} = shift;
+  }
+
+  return $self->{on_connect_error};
+}
+
+####
+sub on_error {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{on_error} = $self->_vld_on_error( shift );
+  }
+
+  return $self->{on_error};
+}
+
+####
+sub _vld_new_params {
+  my __PACKAGE__ $self = shift;
+  my $params = shift;
+
+  $params->{connection_timeout} = $self->_vld_conn_timeout(
+      $params->{connection_timeout} );
+  $params->{read_timeout} = $self->_vld_read_timeout(
+      $params->{read_timeout} );
+  $params->{on_error} = $self->_vld_on_error( $params->{on_error} );
 
   if ( !exists( $params->{reconnect} ) ) {
     $params->{reconnect} = 1;
   }
-
-  if ( defined( $params->{encoding} ) ) {
-    my $enc = $params->{encoding};
-    $params->{encoding} = find_encoding( $enc );
-    if ( !defined( $params->{encoding} ) ) {
-      confess "Encoding '$enc' not found";
-    }
-  }
-
   if ( !defined( $params->{host} ) ) {
     $params->{host} = D_HOST;
   }
   if ( !defined( $params->{port} ) ) {
     $params->{port} = D_PORT;
   }
-  if ( !defined( $params->{on_error} ) ) {
-    $params->{on_error} = sub {
+
+  return $params;
+}
+
+####
+sub _vld_conn_timeout {
+  my $conn_timeout = pop;
+
+  if (
+    defined( $conn_timeout )
+      and ( !looks_like_number( $conn_timeout ) or $conn_timeout < 0 )
+      ) {
+    confess 'Connection timeout must be a positive number';
+  }
+
+  return $conn_timeout;
+}
+
+####
+sub _vld_read_timeout {
+  my $read_timeout = pop;
+
+  if (
+    defined( $read_timeout )
+      and ( !looks_like_number( $read_timeout ) or $read_timeout < 0 )
+      ) {
+    confess 'Read timeout must be a positive number';
+  }
+
+  return $read_timeout;
+}
+
+sub _vld_on_error {
+  my $on_error = pop;
+
+  if ( !defined( $on_error ) ) {
+    $on_error = sub {
       my $err_msg = shift;
       warn "$err_msg\n";
     };
   }
 
-  return $params;
+  return $on_error;
 }
 
 ####
@@ -1010,8 +1126,9 @@ feature
 
 =head1 DESCRIPTION
 
-AnyEvent::Redis::RipeRedis is a non-blocking flexible Redis client with reconnect
-feature. It supports subscriptions, transactions and has simple API.
+AnyEvent::Redis::RipeRedis is the non-blocking flexible Redis client with reconnect
+feature. The client supports subscriptions, transactions and connection via
+UNIX-socket.
 
 Requires Redis 1.2 or higher, and any supported event loop.
 
@@ -1058,74 +1175,90 @@ Server port (default: 6379)
 
 =item password
 
-Authentication password. If it specified, then C<AUTH> command will be send
-immediately to the server after connection and after every reconnection.
+Authentication password. If the password is specified, then the C<AUTH> command
+will be send immediately to the server after a connection and after every
+reconnection.
 
 =item database
 
-Database index. If it set, then client will be switched to specified database
-immediately after connection and after every reconnection.
+Database index. If the index is specified, then client will be switched to
+the specified database immediately after a connection and after every reconnection.
 
-Default database index is C<0>.
+The default database index is C<0>.
 
 =item connection_timeout
 
-If after this timeout client could not connect to the server, callback
-C<on_error> is called with error code C<E_CANT_CONN>.
+If after this timeout the client could not connect to the server, the callback
+C<on_error> is called with the error code C<E_CANT_CONN>. The timeout must be
+specified in seconds and can contain a fractional part.
 
-By default used kernel's connection timeout.
+  my $redis = AnyEvent::Redis::RipeRedis->new(
+    connection_timeout => 10.5,
+  );
+
+By default the client use kernel's connection timeout.
 
 =item read_timeout
 
-If after this timeout client do not received response from the server on any
-command, callback C<on_error> is called with error code C<E_READ_TIMEOUT>.
+If after this timeout the client do not received a response from the server to
+any command, the callback C<on_error> is called with the error code
+C<E_READ_TIMEDOUT>. The timeout must be specified in seconds and can contain
+a fractional part.
+
+  my $redis = AnyEvent::Redis::RipeRedis->new(
+    read_timeout => 0.5,
+  );
 
 Not set by default.
 
 =item lazy
 
-If this parameter is set, then connection will be established, when you will send
-a first command to the server. By default connection establishes after calling
-method C<new>.
+If this parameter is set, then the connection will be established, when you will
+send the first command to the server. By default the connection establishes after
+calling of the method C<new>.
 
 =item reconnect
 
-If this parameter is TRUE and connection to the Redis server was lost, then
-client will try to reconnect to server while executing next command. Client
-try to reconnect only once and if fails, calls C<on_error> callback. If
-you need several attempts of reconnection, just retry command from C<on_error>
-callback as many times, as you need. This feature made client more responsive.
+If the connection to the Redis server was lost and the parameter 'reconnect' is
+TRUE, then the client try to restore the connection, when executing a next command.
+The client try to reconnect only once and if it fails, then is called the C<on_error>
+callback. If you need several attempts of the reconnection, just retry a command
+from the C<on_error> callback as many times, as you need. This feature made the
+client more responsive.
 
 By default is TRUE.
 
 =item encoding
 
-Used to encode an decode strings during input/output operations.
+Used for encode/decode strings during input/output operations.
 
 Not set by default.
 
 =item on_connect => $cb->()
 
-Callback C<on_connect> is called, when connection is successfully established.
+The callback C<on_connect> is called, when the connection is successfully
+established.
 
 Not set by default.
 
 =item on_disconnect => $cb->()
 
-Callback C<on_disconnect> is called, when connection is closed by any reason.
+The callback C<on_disconnect> is called, when the connection is closed by any reason.
 
 Not set by default.
 
 =item on_connect_error => $cb->( $err_msg )
 
-Callback C<on_connect_error> is called, when the connection could not be
-established. If this collback isn't specified, then C<on_error> callback is
-called with error code C<E_CANT_CONN>.
+The callback C<on_connect_error> is called, when the connection could not be
+established. If this collback isn't specified, then the C<on_error> callback is
+called with the error code C<E_CANT_CONN>.
+
+Not set by default.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when any error occurred. If callback is no set,
-client just print error message to C<STDERR>.
+The callback C<on_error> is called, when any error occurred. If the callback is
+not set, the client just print an error message to C<STDERR>.
 
 =back
 
@@ -1133,7 +1266,7 @@ client just print error message to C<STDERR>.
 
 =head2 <command>( [ @args[, \%callbacks ] ] )
 
-Full list of Redis commands can be found here: L<http://redis.io/commands>.
+The full list of the Redis commands can be found here: L<http://redis.io/commands>.
 
   # Set value
   $redis->set( 'foo', 'Some string' );
@@ -1165,17 +1298,19 @@ Full list of Redis commands can be found here: L<http://redis.io/commands>.
 
 =item on_done => $cb->( [ $data ] )
 
-Callback C<on_done> is called, when current operation is done.
+The callback C<on_done> is called, when the current operation is done.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when any error occurred.
+The callback C<on_error> is called, when any error occurred. If the callback is
+not set, then the C<on_error> callback, that was specified in constructor, is
+called.
 
 =back
 
 =head1 TRANSACTIONS
 
-Detailed information abount Redis transactions can be found here:
+The detailed information abount the Redis transactions can be found here:
 L<http://redis.io/topics/transactions>.
 
 =head2 multi( [ \%callbacks ] )
@@ -1239,15 +1374,17 @@ and C<PUNSUBSCRIBE> commands.
 
 =item on_done => $cb->( $ch_name, $sub_num )
 
-Callback C<on_done> is called, when subscription operation is done.
+The callback C<on_done> is called, when the current subscription operation is done.
 
 =item on_message => $cb->( $ch_name, $msg )
 
-Callback C<on_message> is called, when published message is received.
+The callback C<on_message> is called, when a published message is received.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when subscription operation failed.
+The callback C<on_error> is called, when the subscription operation fails. If
+the callback is not set, then the C<on_error> callback, that was specified in
+constructor, is called.
 
 =back
 
@@ -1278,15 +1415,17 @@ Subscribes the client to the given patterns.
 
 =item on_done => $cb->( $ch_pattern, $sub_num )
 
-Callback C<on_done> is called, when subscription operation is done.
+The callback C<on_done> is called, when the current subscription operation is done.
 
 =item on_message => $cb->( $ch_name, $msg, $ch_pattern )
 
-Callback C<on_message> is called, when published message is received.
+The callback C<on_message> is called, when published message is received.
 
 =item on_error => $cb->( $err_msg, $err_code )
 
-Callback C<on_error> is called, when subscription operation failed.
+The callback C<on_error> is called, when the subscription operation fails. If
+the callback is not set, then the C<on_error> callback, that was specified in
+constructor, is called.
 
 =back
 
@@ -1325,19 +1464,19 @@ the parameter C<port> you have to specify the path to the socket.
 
 =head1 LUA SCRIPTS EXECUTION
 
-Redis 2.6 and higher support execution of the Lua scripts on the server side.
+Redis 2.6 and higher support execution of Lua scripts on the server side.
 To execute a Lua script you can use one of the commands C<EVAL> or C<EVALSHA>,
-or you can use special method C<eval_cached()>.
+or you can use the special method C<eval_cached()>.
 
 =head2 eval_cached( $script, $numkeys[, [ @keys, ] [ @args, ] \%callbacks ] );
 
-When you call C<eval_cached()> method, client first generate SHA1 hash for the
-Lua script and cache it in memory. Then client optimistically send C<EVALSHA>
-command under the hood. If C<NO_SCRIPT> error will be returned, client send
-C<EVAL> command.
+When you call the C<eval_cached()> method, the client first generate a SHA1
+hash for a Lua script and cache it in memory. Then the client optimistically
+send the C<EVALSHA> command under the hood. If the C<NO_SCRIPT> error will be
+returned, the client send the C<EVAL> command.
 
-If you call C<eval_cached()> method with the same Lua script, client don't
-generate SHA1 hash for this script repeatedly, it gets hash from cache.
+If you call the C<eval_cached()> method with the same Lua script, client don't
+generate a SHA1 hash for this script repeatedly, it gets a hash from the cache.
 
   $redis->eval_cached( 'return { KEYS[1], KEYS[2], ARGV[1], ARGV[2] }',
       2, 'key1', 'key2', 'first', 'second', {
@@ -1351,8 +1490,9 @@ generate SHA1 hash for this script repeatedly, it gets hash from cache.
 
 =head1 ERROR CODES
 
-Every time when C<on_error> callback is called, current error code passed to it
-in second argument. Error codes can be used for programmatic handling of errors.
+Every time when the calback C<on_error> is called, the current error code passed
+to it in the second argument. Error codes can be used for programmatic handling
+of errors.
 
 AnyEvent::Redis::RipeRedis provides constants of error codes, that can be
 imported and used in expressions.
@@ -1363,7 +1503,8 @@ imported and used in expressions.
 
 =item E_CANT_CONN
 
-Can't connect to server. If this error occurred, client abort all operations.
+Can't connect to the server. If this error occurred, the client abort all
+operations.
 
 =item E_LOADING_DATASET
 
@@ -1371,23 +1512,24 @@ Redis is loading the dataset in memory.
 
 =item E_IO
 
-Input/Output operation error. If this error occurred, client abort all operations
-and close the connection.
+Input/Output operation error. If this error occurred, the client abort all
+operations and close the connection.
 
 =item E_CONN_CLOSED_BY_REMOTE_HOST
 
-Connection closed by remote host. If this error occurred, client abort all operations.
+The connection closed by remote host. If this error occurred, the client abort
+all operations.
 
 =item E_CONN_CLOSED_BY_CLIENT
 
-Connection closed unexpectedly by client. Error occurs, if at time of
-disconnection in client queue were uncompleted operations.
+The connection closed unexpectedly by the client. Error occurs, if at time of
+a disconnection in the client queue were uncompleted operations.
 
 =item E_NO_CONN
 
-No connection to the server. Error occurs, if at time of command execution
-connection has been closed by any reason and parameter C<reconnect> was set to
-FALSE.
+No connection to the server. Error occurs, if at time of a command execution
+the connection has been closed by any reason and the parameter C<reconnect> was
+set to FALSE.
 
 =item E_INVALID_PASS
 
@@ -1399,20 +1541,20 @@ Operation not permitted.
 
 =item E_OPRN_ERROR
 
-Operation error. Usually returned by the Redis server.
+Operation error. Usually returned by the the Redis server.
 
 =item E_UNEXPECTED_DATA
 
-Client received unexpected data from the server. If this error occurred, client
-abort all operations and close the connection.
+The client received unexpected data from the server. If this error occurred,
+the client abort all operations and close the connection.
 
 =item E_NO_SCRIPT
 
-No matching script. Use C<EVAL> command.
+No matching script. Use the C<EVAL> command.
 
 =item E_READ_TIMEDOUT
 
-Read timed out. If this error occurred, client abort all operations and close
+Read timed out. If this error occurred, the client abort all operations and close
 the connection.
 
 =back
@@ -1420,16 +1562,50 @@ the connection.
 =head1 DISCONNECTION
 
 When the connection to the server is no longer needed you can close it in three
-ways: call method C<disconnect()>, send C<QUIT> command or you can just "forget"
-any references to an AnyEvent::Redis::RipeRedis object, but in this case client
-object destroying silently without calling any callbacks including C<on_disconnect>
-callback to avoid unexpected behavior.
+ways: call the method C<disconnect()>, send the C<QUIT> command or you can just
+"forget" any references to an AnyEvent::Redis::RipeRedis object, but in this
+case a client object is destroyed silently without calling any callbacks including
+the C<on_disconnect> callback to avoid an unexpected behavior.
 
 =head2 disconnect()
 
-Method for synchronous disconnection.
+The method for synchronous disconnection.
 
   $redis->disconnect();
+
+=head1 OTHER METHODS
+
+=head2 connection_timeout( $seconds )
+
+Get, set or reset to default the C<connection_timeout> of the client.
+
+=head2 read_timeout( $seconds )
+
+Get, set or disable the C<read_timeout> of the client.
+
+=head2 reconnect( $boolean )
+
+Enable or disable reconnection mode of the client.
+
+=head2 encoding( $enc_name )
+
+Get, set or disable the C<encoding>.
+
+=head2 on_connect( $callback )
+
+Get, set or disable the C<on_connect> callback.
+
+=head2 on_disconnect( $callback )
+
+Get, set or disable the C<on_disconnect> callback.
+
+=head2 on_connect_error( $callback )
+
+Get, set or disable the C<on_connect_error> callback.
+
+=head2 on_error( $callback )
+
+Get, set or disable the C<on_error> callback.
 
 =head1 SEE ALSO
 

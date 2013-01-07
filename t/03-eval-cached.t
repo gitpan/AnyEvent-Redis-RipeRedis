@@ -3,19 +3,24 @@ use strict;
 use warnings;
 
 use lib 't/tlib';
-use Test::More tests => 2;
+use Test::More tests => 5;
 use Test::AnyEvent::RedisHandle;
 use Test::AnyEvent::EVLoop;
-use AnyEvent::Redis::RipeRedis;
 use Scalar::Util qw( weaken );
 
-my $T_CLASS = 'AnyEvent::Redis::RipeRedis';
+my $T_CLASS;
 
+BEGIN {
+  $T_CLASS = 'AnyEvent::Redis::RipeRedis';
+  use_ok( $T_CLASS );
+}
+
+can_ok( $T_CLASS, 'new' );
 can_ok( $T_CLASS, 'eval_cached' );
 
-my $redis = $T_CLASS->new(
+my $t_redis = new_ok( $T_CLASS, [
   password => 'test',
-);
+] );
 
 my @t_data;
 
@@ -27,14 +32,14 @@ ev_loop(
 return redis.status_reply( 'OK' )
 LUA
 ;
-    my $redis = $redis;
-    weaken( $redis );
-    $redis->eval_cached( $script, 0, {
+    my $t_redis = $t_redis;
+    weaken( $t_redis );
+    $t_redis->eval_cached( $script, 0, {
       on_done => sub {
         my $data = shift;
         push( @t_data, $data );
 
-        $redis->eval_cached( $script, 0, {
+        $t_redis->eval_cached( $script, 0, {
           on_done => sub {
             my $data = shift;
             push( @t_data, $data );
@@ -48,4 +53,4 @@ LUA
 
 is_deeply( \@t_data, [ qw( OK OK ) ], 'Script execution' );
 
-$redis->disconnect();
+$t_redis->disconnect();
