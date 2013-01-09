@@ -24,13 +24,15 @@ use fields qw(
   _lazy_conn_st
   _auth_st
   _db_select_st
-  _buffer
+  _ready_to_write
+  _input_buf
+  _tmp_buf
   _processing_queue
   _sub_lock
   _subs
 );
 
-our $VERSION = '1.220';
+our $VERSION = '1.230';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -89,6 +91,12 @@ my %SUB_UNSUB_CMDS = (
   punsubscribe => 1,
 );
 
+my %SPEC_CMDS = (
+  exec => 1,
+  multi => 1,
+  %SUB_UNSUB_CMDS,
+);
+
 my %EVAL_CACHE;
 
 
@@ -119,7 +127,9 @@ sub new {
   $self->{_lazy_conn_st} = $params->{lazy};
   $self->{_auth_st} = S_NEED_PERFORM;
   $self->{_db_select_st} = S_NEED_PERFORM;
-  $self->{_buffer} = [];
+  $self->{_ready_to_write} = 0;
+  $self->{_input_buf} = [];
+  $self->{_tmp_buf} = [];
   $self->{_processing_queue} = [];
   $self->{_sub_lock} = 0;
   $self->{_subs} = {};
@@ -133,68 +143,6 @@ sub new {
 }
 
 ####
-sub multi {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'multi', @_ );
-  $self->{_sub_lock} = 1;
-  $self->_execute_cmd( $cmd );
-
-  return;
-}
-
-####
-sub exec {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'exec', @_ );
-  $self->{_sub_lock} = 0;
-  $self->_execute_cmd( $cmd );
-
-  return;
-}
-
-####
-sub subscribe {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'subscribe', @_ );
-  $self->_execute_sub_cmd( $cmd );
-
-  return;
-}
-
-####
-sub psubscribe {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'psubscribe', @_ );
-  $self->_execute_sub_cmd( $cmd );
-
-  return;
-}
-
-####
-sub unsubscribe {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'unsubscribe', @_ );
-  $self->_execute_sub_cmd( $cmd );
-
-  return;
-}
-
-####
-sub punsubscribe {
-  my __PACKAGE__ $self = shift;
-
-  my $cmd = $self->_prepare_cmd( 'punsubscribe', @_ );
-  $self->_execute_sub_cmd( $cmd );
-
-  return;
-}
-
-####
 sub eval_cached {
   my __PACKAGE__ $self = shift;
   my @args = @_;
@@ -205,11 +153,16 @@ sub eval_cached {
   }
   $cmd->{name} = 'evalsha';
   $cmd->{args} = \@args;
+
   $cmd->{script} = $args[0];
   if ( !exists( $EVAL_CACHE{$cmd->{script}} ) ) {
     $EVAL_CACHE{$cmd->{script}} = sha1_hex( $cmd->{script} );
   }
   $args[0] = $EVAL_CACHE{$cmd->{script}};
+
+  if ( !defined( $cmd->{on_error} ) ) {
+    $cmd->{on_error} = $self->{on_error};
+  }
 
   $self->_execute_cmd( $cmd );
 
@@ -380,6 +333,7 @@ sub _vld_read_timeout {
   return $read_timeout;
 }
 
+####
 sub _vld_on_error {
   my $on_error = pop;
 
@@ -404,7 +358,7 @@ sub _connect {
     rtimeout => $self->{read_timeout},
     on_prepare => $self->_on_prepare(),
     on_connect => $self->_on_connect(),
-    on_connect_error => $self->_on_conn_error(),
+    on_connect_error => $self->_on_connect_error(),
     on_rtimeout => $self->_on_rtimeout(),
     on_eof => $self->_on_eof(),
     on_error => $self->_on_error(),
@@ -455,7 +409,8 @@ sub _on_connect {
       $self->_select_db();
     }
     else {
-      $self->_flush_buffer();
+      $self->{_ready_to_write} = 1;
+      $self->_flush_input_buf();
     }
     if ( defined( $self->{on_connect} ) ) {
       $self->{on_connect}->();
@@ -464,7 +419,7 @@ sub _on_connect {
 }
 
 ####
-sub _on_conn_error {
+sub _on_connect_error {
   my __PACKAGE__ $self = shift;
 
   weaken( $self );
@@ -543,53 +498,6 @@ sub _process_crit_error {
 }
 
 ####
-sub _prepare_cmd {
-  my __PACKAGE__ $self = shift;
-  my $cmd_name = shift;
-  my @args = @_;
-
-  my $cmd;
-  if ( ref( $args[-1] ) eq 'HASH' ) {
-    $cmd = pop( @args );
-  }
-  else {
-    $cmd = {};
-  }
-  $cmd->{name} = $cmd_name,
-  $cmd->{args} = \@args,
-
-  return $cmd;
-}
-
-####
-sub _execute_sub_cmd {
-  my __PACKAGE__ $self = shift;
-  my $cmd = shift;
-
-  if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
-    if ( !defined( $cmd->{on_message} ) ) {
-      confess "'on_message' callback must be specified";
-    }
-  }
-  if ( $self->{_sub_lock} ) {
-    AE::postpone(
-      sub {
-        $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi'"
-            . ' command. First, the transaction must be completed',
-            E_OPRN_ERROR );
-      }
-    );
-
-    return;
-  }
-  $cmd->{resp_remaining} = scalar( @{$cmd->{args}} );
-
-  $self->_execute_cmd( $cmd );
-
-  return;
-}
-
-####
 sub _execute_cmd {
   my __PACKAGE__ $self = shift;
   my $cmd = shift;
@@ -598,45 +506,71 @@ sub _execute_cmd {
     $cmd->{on_error} = $self->{on_error};
   }
 
-  if ( !defined( $self->{_handle} ) ) {
-    if ( $self->{reconnect} or $self->{_lazy_conn_st} ) {
-      if ( $self->{_lazy_conn_st} ) {
-        $self->{_lazy_conn_st} = 0;
-      }
-      $self->_connect();
-    }
-    else {
-      AE::postpone(
-        sub {
-          $cmd->{on_error}->( "Can't handle the command '$cmd->{name}'."
-              . ' No connection to the server', E_NO_CONN );
+  if ( exists( $SPEC_CMDS{$cmd->{name}} ) ) {
+    if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
+      if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
+        if ( !defined( $cmd->{on_message} ) ) {
+          confess "'on_message' callback must be specified";
         }
-      );
+      }
+      if ( $self->{_sub_lock} ) {
+        AE::postpone(
+          sub {
+            $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi'"
+                . ' command. First, the transaction must be completed',
+                E_OPRN_ERROR );
+          }
+        );
 
-      return;
+        return;
+      }
+      $cmd->{resp_remaining} = scalar( @{$cmd->{args}} );
+    }
+    elsif ( $cmd->{name} eq 'multi' ) {
+      $self->{_sub_lock} = 1;
+    }
+    elsif ( $cmd->{name} eq 'exec' ) {
+      $self->{_sub_lock} = 0;
     }
   }
-  if ( $self->{_connected} ) {
-    if ( $self->{_auth_st} == S_IS_DONE ) {
-      if ( $self->{_db_select_st} == S_IS_DONE ) {
-        $self->_push_write( $cmd );
-      }
-      else {
-        if ( $self->{_db_select_st} == S_NEED_PERFORM ) {
-          $self->_select_db();
-        }
-        push( @{$self->{_buffer}}, $cmd );
-      }
-    }
-    else {
-      if ( $self->{_auth_st} == S_NEED_PERFORM ) {
-        $self->_auth();
-      }
-      push( @{$self->{_buffer}}, $cmd );
-    }
+
+
+  if ( $self->{_ready_to_write} ) {
+    $self->_push_write( $cmd );
   }
   else {
-    push( @{$self->{_buffer}}, $cmd );
+    if ( defined( $self->{_handle} ) ) {
+      if ( $self->{_connected} ) {
+        if ( $self->{_auth_st} == S_IS_DONE ) {
+          if ( $self->{_db_select_st} == S_NEED_PERFORM ) {
+            $self->_select_db();
+          }
+        }
+        elsif ( $self->{_auth_st} == S_NEED_PERFORM ) {
+          $self->_auth();
+        }
+      }
+    }
+    else {
+      if ( $self->{reconnect} or $self->{_lazy_conn_st} ) {
+        if ( $self->{_lazy_conn_st} ) {
+          $self->{_lazy_conn_st} = 0;
+        }
+        $self->_connect();
+      }
+      else {
+        AE::postpone(
+          sub {
+            $cmd->{on_error}->( "Can't handle the command '$cmd->{name}'."
+                . ' No connection to the server', E_NO_CONN );
+          }
+        );
+
+        return;
+      }
+    }
+
+    push( @{$self->{_input_buf}}, $cmd );
   }
 
   return;
@@ -658,7 +592,8 @@ sub _auth {
         $self->_select_db();
       }
       else {
-        $self->_flush_buffer();
+        $self->{_ready_to_write} = 1;
+        $self->_flush_input_buf();
       }
     },
 
@@ -687,7 +622,8 @@ sub _select_db {
     args => [ $self->{database} ],
     on_done => sub {
       $self->{_db_select_st} = S_IS_DONE;
-      $self->_flush_buffer();
+      $self->{_ready_to_write} = 1;
+      $self->_flush_input_buf();
     },
 
     on_error => sub {
@@ -879,11 +815,33 @@ sub _process_data {
   my $data = shift;
 
   my $cmd = $self->{_processing_queue}[0];
-  if ( defined( $cmd ) ) {
-    if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
-      $self->_process_sub_action( $cmd, $data );
-      return;
+
+  if ( !defined( $cmd ) ) {
+    $self->_process_crit_error( "Don't known how process response data."
+        . ' Command queue is empty', E_UNEXPECTED_DATA );
+  }
+
+  if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
+    if ( --$cmd->{resp_remaining} == 0 ) {
+      shift( @{$self->{_processing_queue}} );
     }
+
+    if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
+      $self->{_subs}{$data->[1]} = $cmd->{on_message};
+      if ( defined( $cmd->{on_done} ) ) {
+        $cmd->{on_done}->( $data->[1], $data->[2] );
+      }
+    }
+    else {
+      if ( exists( $self->{_subs}{$data->[1]} ) ) {
+        delete( $self->{_subs}{$data->[1]} );
+      }
+      if ( defined( $cmd->{on_done} ) ) {
+        $cmd->{on_done}->( $data->[1], $data->[2] );
+      }
+    }
+  }
+  else {
     shift( @{$self->{_processing_queue}} );
     if ( $cmd->{name} eq 'quit' ) {
       $self->disconnect();
@@ -891,10 +849,6 @@ sub _process_data {
     if ( defined( $cmd->{on_done} ) ) {
       $cmd->{on_done}->( $data );
     }
-  }
-  else {
-    $self->_process_crit_error( "Don't known how process response data."
-        . ' Command queue is empty', E_UNEXPECTED_DATA );
   }
 
   return;
@@ -905,18 +859,17 @@ sub _process_pub_message {
   my __PACKAGE__ $self = shift;
   my $data = shift;
 
-  if ( exists( $self->{_subs}{$data->[1]} ) ) {
-    my $msg_cb = $self->{_subs}{$data->[1]};
-    if ( $data->[0] eq 'message' ) {
-      $msg_cb->( $data->[1], $data->[2] );
-    }
-    else {
-      $msg_cb->( $data->[2], $data->[3], $data->[1] );
-    }
-  }
-  else {
+  if ( !exists( $self->{_subs}{$data->[1]} ) ) {
     $self->_process_crit_error( "Don't known how process published message."
         . " Unknown channel or pattern '$data->[1]'", E_UNEXPECTED_DATA );
+  }
+
+  my $msg_cb = $self->{_subs}{$data->[1]};
+  if ( $data->[0] eq 'message' ) {
+    $msg_cb->( $data->[1], $data->[2] );
+  }
+  else {
+    $msg_cb->( $data->[2], $data->[3], $data->[1] );
   }
 
   return;
@@ -928,64 +881,36 @@ sub _process_cmd_error {
   my $err_msg = shift;
 
   my $cmd = shift( @{$self->{_processing_queue}} );
-  if ( defined( $cmd ) ) {
-    my $err_code;
-    if ( index( $err_msg, 'NOSCRIPT' ) == 0 ) {
-      $err_code = E_NO_SCRIPT;
-      if ( exists( $cmd->{script} ) ) {
-        $cmd->{name} = 'eval';
-        $cmd->{args}[0] = $cmd->{script};
-        $self->_push_write( $cmd );
 
-        return;
-      }
-    }
-    elsif ( index( $err_msg, 'LOADING' ) == 0 ) {
-      $err_code = E_LOADING_DATASET;
-    }
-    elsif ( $err_msg eq 'ERR invalid password' ) {
-      $err_code = E_INVALID_PASS;
-    }
-    elsif ( $err_msg eq 'ERR operation not permitted' ) {
-      $err_code = E_OPRN_NOT_PERMITTED;
-    }
-    else {
-      $err_code = E_OPRN_ERROR;
-    }
-    $cmd->{on_error}->( $err_msg, $err_code );
-  }
-  else {
+  if ( !defined( $cmd ) ) {
     $self->_process_crit_error( "Don't known how process error message"
         . " '$err_msg'. Command queue is empty", E_UNEXPECTED_DATA );
   }
 
-  return;
-}
+  my $err_code;
+  if ( index( $err_msg, 'NOSCRIPT' ) == 0 ) {
+    $err_code = E_NO_SCRIPT;
+    if ( exists( $cmd->{script} ) ) {
+      $cmd->{name} = 'eval';
+      $cmd->{args}[0] = $cmd->{script};
+      $self->_push_write( $cmd );
 
-####
-sub _process_sub_action {
-  my __PACKAGE__ $self = shift;
-  my $cmd = shift;
-  my $data = shift;
-
-  if ( --$cmd->{resp_remaining} == 0 ) {
-    shift( @{$self->{_processing_queue}} );
-  }
-
-  if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
-    $self->{_subs}{$data->[1]} = $cmd->{on_message};
-    if ( defined( $cmd->{on_done} ) ) {
-      $cmd->{on_done}->( $data->[1], $data->[2] );
+      return;
     }
+  }
+  elsif ( index( $err_msg, 'LOADING' ) == 0 ) {
+    $err_code = E_LOADING_DATASET;
+  }
+  elsif ( $err_msg eq 'ERR invalid password' ) {
+    $err_code = E_INVALID_PASS;
+  }
+  elsif ( $err_msg eq 'ERR operation not permitted' ) {
+    $err_code = E_OPRN_NOT_PERMITTED;
   }
   else {
-    if ( exists( $self->{_subs}{$data->[1]} ) ) {
-      delete( $self->{_subs}{$data->[1]} );
-    }
-    if ( defined( $cmd->{on_done} ) ) {
-      $cmd->{on_done}->( $data->[1], $data->[2] );
-    }
+    $err_code = E_OPRN_ERROR;
   }
+  $cmd->{on_error}->( $err_msg, $err_code );
 
   return;
 }
@@ -999,12 +924,12 @@ sub _is_pub_message {
 }
 
 ####
-sub _flush_buffer {
+sub _flush_input_buf {
   my __PACKAGE__ $self = shift;
 
-  my @commands = @{$self->{_buffer}};
-  $self->{_buffer} = [];
-  foreach my $cmd ( @commands ) {
+  $self->{_tmp_buf} = $self->{_input_buf};
+  $self->{_input_buf} = [];
+  while ( my $cmd = shift( @{$self->{_tmp_buf}} ) ) {
     $self->_push_write( $cmd );
   }
 
@@ -1022,6 +947,7 @@ sub _reset_state {
   $self->{_connected} = 0;
   $self->{_auth_st} = S_NEED_PERFORM;
   $self->{_db_select_st} = S_NEED_PERFORM;
+  $self->{_ready_to_write} = 0;
   $self->{_sub_lock} = 0;
   $self->{_subs} = {};
 
@@ -1034,13 +960,15 @@ sub _abort_cmds {
   my $err_msg = shift;
   my $err_code = shift;
 
-  my @commands = (
+  my @cmds = (
     @{$self->{_processing_queue}},
-    @{$self->{_buffer}}
+    @{$self->{_tmp_buf}},
+    @{$self->{_input_buf}},
   );
-  $self->{_buffer} = [];
+  $self->{_input_buf} = [];
+  $self->{_tmp_buf} = [],
   $self->{_processing_queue} = [];
-  foreach my $cmd ( @commands ) {
+  foreach my $cmd ( @cmds ) {
     $cmd->{on_error}->( "Command '$cmd->{name}' aborted: $err_msg", $err_code );
   }
 
@@ -1056,8 +984,15 @@ sub AUTOLOAD {
 
   my $sub = sub {
     my __PACKAGE__ $self = shift;
+    my @args = @_;
 
-    my $cmd = $self->_prepare_cmd( $cmd_name, @_ );
+    my $cmd = {};
+    if ( ref( $args[-1] ) eq 'HASH' ) {
+      $cmd = pop( @args );
+    }
+    $cmd->{name} = $cmd_name;
+    $cmd->{args} = \@args;
+
     $self->_execute_cmd( $cmd );
 
     return;
@@ -1341,7 +1276,7 @@ Forget about all watched keys.
 
 =head1 SUBSCRIPTIONS
 
-Detailed information about Redis Pub/Sub can be found here:
+The detailed information about Redis Pub/Sub can be found here:
 L<http://redis.io/topics/pubsub>
 
 =head2 subscribe( @channels[, \%callbacks ] )
