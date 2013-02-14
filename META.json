@@ -35,7 +35,7 @@
          "requires" : {
             "AnyEvent" : "6.01",
             "Carp" : 0,
-            "Digest::SHA1" : 0,
+            "Digest::SHA" : 0,
             "Encode" : 0,
             "Scalar::Util" : 0,
             "perl" : "5.006000"
@@ -55,5 +55,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.235"
+   "version" : "1.236"
 }
