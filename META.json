@@ -23,7 +23,8 @@
       "build" : {
          "requires" : {
             "Test::MockObject" : 0,
-            "Test::More" : 0
+            "Test::More" : 0,
+            "Test::RedisServer" : 0
          }
       },
       "configure" : {
@@ -55,5 +56,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.239"
+   "version" : "1.240"
 }

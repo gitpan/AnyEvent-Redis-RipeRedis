@@ -5,6 +5,7 @@ author:
 build_requires:
   Test::MockObject: 0
   Test::More: 0
+  Test::RedisServer: 0
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
@@ -30,4 +31,4 @@ resources:
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.239
+version: 1.240
