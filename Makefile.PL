@@ -1,11 +1,11 @@
-use 5.006000;
+use 5.008000;
 
 use ExtUtils::MakeMaker;
 
 WriteMakefile(
   NAME => 'AnyEvent::Redis::RipeRedis',
   VERSION_FROM => 'lib/AnyEvent/Redis/RipeRedis.pm', # finds $VERSION
-  MIN_PERL_VERSION => '5.006000',
+  MIN_PERL_VERSION => '5.008000',
   PREREQ_PM => {
     'AnyEvent' => 6.01,
     'Encode' => 0,
@@ -13,9 +13,10 @@ WriteMakefile(
     'Digest::SHA' => 0,
     'Carp' => 0,
   },
-  BUILD_REQUIRES => {
+  TEST_REQUIRES => {
     'Test::More' => 0,
     'Test::RedisServer' => 0,
+    'Test::Fatal' => 0,
   },
   META_MERGE => {
     resources => {
