@@ -10,7 +10,7 @@ require 't/test_helper.pl';
 
 my $server_info = run_redis_instance();
 if ( !defined( $server_info ) ) {
-  plan skip_all => 'redis-server is required to this test';
+  plan skip_all => 'redis-server is required for this test';
 }
 my $redis = AnyEvent::Redis::RipeRedis->new(
   host => $server_info->{host},
@@ -18,13 +18,14 @@ my $redis = AnyEvent::Redis::RipeRedis->new(
 );
 my $ver = get_redis_version( $redis );
 if ( $ver < 2.00600 ) {
-  plan skip_all => 'redis-server 2.6 or higher is required to this test';
+  plan skip_all => 'redis-server 2.6 or higher is required for this test';
 }
-plan tests => 3;
+plan tests => 13;
 
 t_no_script( $redis );
 t_eval_cached( $redis );
 t_on_error_in_eval_cached( $redis );
+t_errors_in_mbulk_reply( $redis );
 
 $redis->disconnect();
 
@@ -50,7 +51,7 @@ LUA
           $cv->send();
         }
       } );
-    },
+    }
   );
 
   is( $t_err_code, E_NO_SCRIPT, 'no script' );
@@ -103,26 +104,76 @@ LUA
 sub t_on_error_in_eval_cached {
   my $redis = shift;
 
+  my $t_err_msg;
   my $t_err_code;
 
   my $script = <<LUA
-return ARGV[1]
+return redis.error_reply( "Something wrong." )
 LUA
 ;
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->eval_cached( $script, 1, {
+      $redis->eval_cached( $script, 0, {
         on_error => sub {
-          $t_err_code = pop;
+          $t_err_msg = shift;
+          $t_err_code = shift;
           $cv->send();
         },
       } );
     }
   );
 
-  is( $t_err_code, E_OPRN_ERROR, "'on_error' in eval_cached" );
+  my $t_name = "'on_error' in eval_cached;";
+  is( $t_err_msg, 'Something wrong.', "$t_name; error message" );
+  is( $t_err_code, E_OPRN_ERROR, "$t_name; error code" );
+
+  return;
+}
+
+####
+sub t_errors_in_mbulk_reply {
+  my $redis = shift;
+
+  my $t_err_msg;
+  my $t_err_code;
+  my $t_data;
+
+  my $script = <<LUA
+return { 42, redis.error_reply( "Something wrong." ),
+    { redis.error_reply( "NOSCRIPT No matching script." ) } }
+LUA
+;
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->eval( $script, 0, {
+        on_error => sub {
+          $t_err_msg = shift;
+          $t_err_code = shift;
+          $t_data = shift;
+          $cv->send();
+        },
+      } );
+    }
+  );
+
+  my $t_name = 'errors in multi-bulk reply';
+  my $err_class = 'AnyEvent::Redis::RipeRedis::Error';
+  is( $t_err_msg, "Operation 'eval' completed with errors.",
+      "$t_name; error message" );
+  is( $t_err_code, E_OPRN_ERROR, "$t_name; error code" );
+  is( $t_data->[0], 42, "$t_name; numeric reply" );
+  isa_ok( $t_data->[1], $err_class, "$t_name; lv0" );
+  is( $t_data->[1]->message(), 'Something wrong.',
+      "$t_name; lv0 error message" );
+  is( $t_data->[1]->code(), E_OPRN_ERROR, "$t_name; lv0 error code" );
+  isa_ok( $t_data->[2][0], $err_class, "$t_name; lv1" );
+  is( $t_data->[2][0]->message(), 'NOSCRIPT No matching script.',
+      "$t_name; lv1 error message" );
+  is( $t_data->[2][0]->code(), E_NO_SCRIPT, "$t_name; lv1 error code" );
 
   return;
 }

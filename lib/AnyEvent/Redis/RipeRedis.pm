@@ -1,8 +1,10 @@
-package AnyEvent::Redis::RipeRedis;
-
 use 5.008000;
 use strict;
 use warnings;
+
+####
+package AnyEvent::Redis::RipeRedis;
+
 use base qw( Exporter );
 
 use fields qw(
@@ -32,7 +34,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.244';
+our $VERSION = '1.250';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -72,6 +74,10 @@ use constant {
   S_NEED_PERFORM => 1,
   S_IN_PROGRESS => 2,
   S_IS_DONE => 3,
+
+  # Flags
+  F_ERROR_REPLY => 1,
+  F_SAFE_DISCONN => 1,
 
   # String terminator
   EOL => "\r\n",
@@ -185,7 +191,7 @@ sub connection_timeout {
       defined( $conn_timeout )
         and ( !looks_like_number( $conn_timeout ) or $conn_timeout < 0 )
         ) {
-      confess 'Connection timeout must be a positive number';
+      confess 'Connection timeout must be a positive number.';
     }
     $self->{connection_timeout} = $conn_timeout;
   }
@@ -203,7 +209,7 @@ sub read_timeout {
       defined( $read_timeout )
         and ( !looks_like_number( $read_timeout ) or $read_timeout < 0 )
         ) {
-      confess 'Read timeout must be a positive number';
+      confess 'Read timeout must be a positive number.';
     }
     $self->{read_timeout} = $read_timeout;
   }
@@ -232,7 +238,7 @@ sub encoding {
     if ( defined( $enc ) ) {
       $self->{encoding} = find_encoding( $enc );
       if ( !defined( $self->{encoding} ) ) {
-        confess "Encoding '$enc' not found";
+        confess "Encoding '$enc' not found.";
       }
     }
     else {
@@ -387,7 +393,7 @@ sub _on_rtimeout {
 
   return sub {
     if ( @{$self->{_processing_queue}} ) {
-      $self->_process_crit_error( 'Read timed out', E_READ_TIMEDOUT );
+      $self->_process_crit_error( 'Read timed out.', E_READ_TIMEDOUT );
     }
   };
 }
@@ -399,7 +405,7 @@ sub _on_eof {
   weaken( $self );
 
   return sub {
-    $self->_process_crit_error( 'Connection closed by remote host',
+    $self->_process_crit_error( 'Connection closed by remote host.',
         E_CONN_CLOSED_BY_REMOTE_HOST );
   };
 }
@@ -449,6 +455,9 @@ sub _execute_cmd {
   my __PACKAGE__ $self = shift;
   my $cmd = shift;
 
+  if ( !exists( $cmd->{args} ) ) {
+    $cmd->{args} = [];
+  }
   if ( !defined( $cmd->{on_error} ) ) {
     $cmd->{on_error} = $self->{on_error};
   }
@@ -457,14 +466,14 @@ sub _execute_cmd {
     if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
       if ( exists( $SUB_CMDS{$cmd->{name}} ) ) {
         if ( !defined( $cmd->{on_message} ) ) {
-          confess "'on_message' callback must be specified";
+          confess "'on_message' callback must be specified.";
         }
       }
       if ( $self->{_sub_lock} ) {
         AE::postpone(
           sub {
             $cmd->{on_error}->( "Command '$cmd->{name}' not allowed after 'multi'"
-                . ' command. First, the transaction must be completed',
+                . ' command. First, the transaction must be completed.',
                 E_OPRN_ERROR );
           }
         );
@@ -508,7 +517,7 @@ sub _execute_cmd {
       AE::postpone(
         sub {
           $cmd->{on_error}->( "Can't handle the command '$cmd->{name}'."
-              . ' No connection to the server', E_NO_CONN );
+              . ' No connection to the server.', E_NO_CONN );
         }
       );
 
@@ -621,8 +630,8 @@ sub _on_read {
   weaken( $self );
 
   return sub {
-    my $hdl = $self->{_handle};
-    while ( defined( $hdl->{rbuf} ) ) {
+    while ( defined( $self->{_handle} ) ) { # check for a case of disconnect
+      my $hdl = $self->{_handle};
       if ( defined( $bulk_len ) ) {
         my $bulk_eol_len = $bulk_len + EOL_LEN;
         if ( length( $hdl->{rbuf} ) < $bulk_eol_len ) {
@@ -650,7 +659,7 @@ sub _on_read {
           return 1 if $cb->( $data );
         }
         elsif ( $type eq '-' ) {
-          return 1 if $cb->( $data, 1 );
+          return 1 if $cb->( $data, F_ERROR_REPLY );
         }
         elsif ( $type eq '$' ) {
           if ( $data >= 0 ) {
@@ -674,11 +683,15 @@ sub _on_read {
           }
         }
         else {
-          $self->_process_crit_error( 'Unexpected data type received',
+          $self->_process_crit_error( 'Unexpected data type received.',
               E_UNEXPECTED_DATA );
+
+          return;
         }
       }
     }
+
+    return;
   };
 }
 
@@ -690,8 +703,8 @@ sub _unshift_read {
 
   my $read_cb;
   my $resp_cb;
-  my @data_list;
-  my @errors;
+  my @data;
+  my $err_cnt = 0;
   my $remaining = $mbulk_len;
 
   {
@@ -699,31 +712,40 @@ sub _unshift_read {
     weaken( $self );
 
     $resp_cb = sub {
-      my $data = shift;
+      my $data_chunk = shift;
       my $is_err = shift;
 
       if ( $is_err ) {
-        push( @errors, $data );
+        $err_cnt++;
+        if ( ref( $data_chunk ) ne 'ARRAY' ) {
+          my $err_code = E_OPRN_ERROR;
+          if ( index( $data_chunk, 'NOSCRIPT' ) == 0 ) {
+            $err_code = E_NO_SCRIPT;
+          }
+          $data_chunk = AnyEvent::Redis::RipeRedis::Error->new(
+            code => $err_code,
+            message => $data_chunk,
+          );
+        }
       }
-      else {
-        push( @data_list, $data );
-      }
+
+      push( @data, $data_chunk );
 
       $remaining--;
       if (
-        ref( $data ) eq 'ARRAY' and @{$data}
+        ref( $data_chunk ) eq 'ARRAY' and @{$data_chunk}
           and $remaining > 0
           ) {
         $self->{_handle}->unshift_read( $read_cb );
       }
       elsif ( $remaining == 0 ) {
         undef( $read_cb ); # Collect garbage
-        if ( @errors ) {
-          my $err_msg = join( "\n", @errors );
-          $cb->( $err_msg, 1 );
+
+        if ( $err_cnt > 0 ) {
+          $cb->( \@data, F_ERROR_REPLY );
         }
         else {
-          $cb->( \@data_list );
+          $cb->( \@data );
         }
 
         return 1;
@@ -765,7 +787,9 @@ sub _process_data {
 
   if ( !defined( $cmd ) ) {
     $self->_process_crit_error( "Don't known how process response data."
-        . ' Command queue is empty', E_UNEXPECTED_DATA );
+        . ' Command queue is empty.', E_UNEXPECTED_DATA );
+
+    return;
   }
 
   if ( exists( $SUB_UNSUB_CMDS{$cmd->{name}} ) ) {
@@ -804,7 +828,9 @@ sub _process_pub_message {
 
   if ( !exists( $self->{_subs}{$data->[1]} ) ) {
     $self->_process_crit_error( "Don't known how process published message."
-        . " Unknown channel or pattern '$data->[1]'", E_UNEXPECTED_DATA );
+        . " Unknown channel or pattern '$data->[1]'.", E_UNEXPECTED_DATA );
+
+    return;
   }
 
   my $msg_cb = $self->{_subs}{$data->[1]};
@@ -821,17 +847,26 @@ sub _process_pub_message {
 ####
 sub _process_cmd_error {
   my __PACKAGE__ $self = shift;
-  my $err_msg = shift;
+  my $data = shift;
 
   my $cmd = shift( @{$self->{_processing_queue}} );
 
   if ( !defined( $cmd ) ) {
-    $self->_process_crit_error( "Don't known how process error message"
-        . " '$err_msg'. Command queue is empty", E_UNEXPECTED_DATA );
+    $self->_process_crit_error( "Don't known how process error."
+        . " Command queue is empty.", E_UNEXPECTED_DATA );
+
+    return;
   }
 
-  my $err_code;
-  if ( index( $err_msg, 'NOSCRIPT' ) == 0 ) {
+  if ( ref( $data ) eq 'ARRAY' ) {
+    $cmd->{on_error}->( "Operation '$cmd->{name}' completed with errors.",
+        E_OPRN_ERROR, $data );
+
+    return;
+  }
+
+  my $err_code = E_OPRN_ERROR;
+  if ( index( $data, 'NOSCRIPT' ) == 0 ) {
     $err_code = E_NO_SCRIPT;
     if ( exists( $cmd->{script} ) ) {
       $cmd->{name} = 'eval';
@@ -841,13 +876,11 @@ sub _process_cmd_error {
       return;
     }
   }
-  elsif ( index( $err_msg, 'LOADING' ) == 0 ) {
+  elsif ( index( $data, 'LOADING' ) == 0 ) {
     $err_code = E_LOADING_DATASET;
   }
-  else {
-    $err_code = E_OPRN_ERROR;
-  }
-  $cmd->{on_error}->( $err_msg, $err_code );
+
+  $cmd->{on_error}->( $data, $err_code );
 
   return;
 }
@@ -880,7 +913,7 @@ sub _disconnect {
 
   my $was_connected = $self->{_connected};
   $self->_reset_state();
-  $self->_abort_cmds( 'Connection closed by client', E_CONN_CLOSED_BY_CLIENT,
+  $self->_abort_cmds( 'Connection closed by client.', E_CONN_CLOSED_BY_CLIENT,
       $safe_disconn );
   if (
     $was_connected and !$safe_disconn
@@ -926,7 +959,7 @@ sub _abort_cmds {
   $self->{_tmp_buf} = [],
   $self->{_processing_queue} = [];
   foreach my $cmd ( @cmds ) {
-    my $full_err_msg = "Command '$cmd->{name}' aborted: $err_msg";
+    my $full_err_msg = "Operation '$cmd->{name}' aborted: $err_msg";
     if ( !$safe_abort ) {
       $cmd->{on_error}->( $full_err_msg, $err_code );
     }
@@ -976,10 +1009,45 @@ sub DESTROY {
   # Check whether the object was created entirely
   if ( defined( $self->{_subs} ) ) {
     # Disconnect without calling any callbacks
-    $self->_disconnect( 1 );
+    $self->_disconnect( F_SAFE_DISCONN );
   }
 
   return;
+}
+
+
+####
+package AnyEvent::Redis::RipeRedis::Error;
+
+use fields qw(
+  message
+  code
+);
+
+
+# Constructor
+sub new {
+  my $proto = shift;
+  my %params = @_;
+
+  my __PACKAGE__ $self = fields::new( $proto );
+
+  $self->{message} = $params{message};
+  $self->{code} = $params{code};
+
+  return $self;
+}
+
+####
+sub message {
+  my __PACKAGE__ $self = shift;
+  return $self->{message};
+}
+
+####
+sub code {
+  my __PACKAGE__ $self = shift;
+  return $self->{code};
 }
 
 1;
@@ -1011,7 +1079,7 @@ feature
   );
 
   # Set value
-  $redis->set( 'foo', 'Some string', {
+  $redis->set( 'foo', 'string', {
     on_done => sub {
       print "SET is done\n";
       $cv->send();
@@ -1030,9 +1098,9 @@ feature
 
 =head1 DESCRIPTION
 
-AnyEvent::Redis::RipeRedis is the flexible non-blocking Redis client with reconnect
-feature. The client supports subscriptions, transactions and connection via
-UNIX-socket.
+AnyEvent::Redis::RipeRedis is the flexible non-blocking Redis client with
+reconnect feature. The client supports subscriptions, transactions and connection
+via UNIX-socket.
 
 Requires Redis 1.2 or higher, and any supported event loop.
 
@@ -1096,8 +1164,8 @@ The default database index is C<0>.
 If this parameter specified and connection to the Redis server is fails after
 specified timeout, then the C<on_error> or C<on_connect_error> callback is called.
 In case, when C<on_error> callback is called, C<E_CANT_CONN> error code is passed
-to callback as second argument. The timeout must be specified in seconds and can
-contain a fractional part.
+to callback in the second argument. The timeout must be specified in seconds and
+can contain a fractional part.
 
   my $redis = AnyEvent::Redis::RipeRedis->new(
     connection_timeout => 10.5,
@@ -1178,7 +1246,7 @@ not set, the client just print an error message to C<STDERR>.
 The full list of the Redis commands can be found here: L<http://redis.io/commands>.
 
   # Set value
-  $redis->set( 'foo', 'Some string' );
+  $redis->set( 'foo', 'string' );
 
   # Increment
   $redis->incr( 'bar', {
@@ -1233,6 +1301,50 @@ atomic execution using C<EXEC>.
 Executes all previously queued commands in a transaction and restores the
 connection state to normal. When using C<WATCH>, C<EXEC> will execute commands
 only if the watched keys were not modified.
+
+If after C<EXEC> command at least one operation fails, then C<on_error> callback
+is called with C<E_OPRN_ERROR> error code and with reply data. Reply data is
+passed in third argument of C<on_error> callback and will contain errors of
+failed operations and replies of successful operations. Errors will be
+represented as objects of the class C<AnyEvent::Redis::RipeRedis::Error>. Each
+error object has two methods: C<message()> to get error message and C<code()> to
+get error code.
+
+  use Scalar::Util qw( blessed );
+
+  $redis->multi();
+  $redis->set( 'foo', 'string' );
+  $redis->incr( 'foo' ); # causes an error
+  $redis->exec( {
+    on_done => sub {
+      my $data = shift;
+      foreach my $reply ( @{$data}  ) {
+        print "$reply\n";
+      }
+    },
+    on_error => sub {
+      my $err_msg = shift;
+      my $err_code = shift;
+      my $data = shift;
+
+      warn "$err_msg\n";
+      foreach my $reply ( @{$data}  ) {
+        if (
+          blessed( $reply )
+            and $reply->isa( 'AnyEvent::Redis::RipeRedis::Error' )
+            ) {
+          my $oprn_err_msg = $reply->message();
+          warn "$oprn_err_msg\n";
+        }
+        else {
+          print "$reply\n";
+        }
+      }
+
+      $cv->send();
+    },
+  } );
+
 
 =head2 discard( [ \%callbacks ] )
 
@@ -1412,6 +1524,38 @@ Redis 2.6 and higher support execution of Lua scripts on the server side.
 To execute a Lua script you can use one of the commands C<EVAL> or C<EVALSHA>,
 or you can use the special method C<eval_cached()>.
 
+If Lua script returns multi-bulk reply with at least one error reply, then
+C<on_error> callback is called with C<E_OPRN_ERROR> error code and with reply
+data. Reply data is passed in third argument of C<on_error> callback and will
+contain returned errors and other data. Errors will be represented as objects of
+the class C<AnyEvent::Redis::RipeRedis::Error>. Each error object has two
+methods: C<message()> to get error message and C<code()> to get error code.
+
+  use Scalar::Util qw( blessed );
+
+  $redis->eval( "return { 'foo', redis.error_reply( 'Error.' ) }", 0, {
+    on_error => sub {
+      my $err_msg = shift;
+      my $err_code = shift;
+      my $data = shift;
+
+      warn "$err_msg\n";
+      foreach my $reply ( @{$data}  ) {
+        if (
+          blessed( $reply )
+            and $reply->isa( 'AnyEvent::Redis::RipeRedis::Error' )
+            ) {
+          my $oprn_err_msg = $reply->message();
+          warn "$oprn_err_msg\n";
+        }
+        else {
+          print "$reply\n";
+        }
+      }
+      $cv->send();
+    }
+  } );
+
 =head2 eval_cached( $script, $numkeys[, [ @keys, ][ @args, ]\%callbacks ] );
 
 When you call the C<eval_cached()> method, the client first generate a SHA1
@@ -1439,10 +1583,10 @@ cause memory leaks.
 =head1 ERROR CODES
 
 Every time when the calback C<on_error> is called, the current error code is
-passed to it as the second argument. Error codes can be used for programmatic
+passed to it in the second argument. Error codes can be used for programmatic
 handling of errors.
 
-AnyEvent::Redis::RipeRedis provides constants of error codes, that can be
+AnyEvent::Redis::RipeRedis provides constants of error codes, which can be
 imported and used in expressions.
 
   use AnyEvent::Redis::RipeRedis qw( :err_codes );
@@ -1585,8 +1729,8 @@ Konstantin Uvarin
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (c) 2012-2013, Eugene Ponizovsky, E<lt>ponizovsky@gmail.comE<gt>. All rights
-reserved.
+Copyright (c) 2012-2013, Eugene Ponizovsky, E<lt>ponizovsky@gmail.comE<gt>.
+All rights reserved.
 
 This module is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
