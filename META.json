@@ -4,7 +4,7 @@
       "Eugene Ponizovsky <ponizovsky@gmail.com>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.130880",
+   "generated_by" : "ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.130880",
    "license" : [
       "perl_5"
    ],
@@ -22,6 +22,7 @@
    "prereqs" : {
       "build" : {
          "requires" : {
+            "Net::EmptyPort" : "0",
             "Test::Fatal" : "0",
             "Test::More" : "0",
             "Test::RedisServer" : "0"
@@ -56,5 +57,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.251"
+   "version" : "1.252"
 }

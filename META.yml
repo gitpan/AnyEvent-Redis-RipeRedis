@@ -3,13 +3,14 @@ abstract: 'Flexible non-blocking Redis client with reconnect'
 author:
   - 'Eugene Ponizovsky <ponizovsky@gmail.com>'
 build_requires:
+  Net::EmptyPort: 0
   Test::Fatal: 0
   Test::More: 0
   Test::RedisServer: 0
 configure_requires:
   ExtUtils::MakeMaker: 6.64
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.130880'
+generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.130880'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -31,4 +32,4 @@ resources:
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.251
+version: 1.252

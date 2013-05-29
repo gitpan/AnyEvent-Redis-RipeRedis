@@ -7,11 +7,6 @@ use Test::RedisServer;
 use AnyEvent;
 
 ####
-sub get_tcp_port {
-  return 50000 + int( rand() * 1000 );
-}
-
-####
 sub run_redis_instance {
   my %params = @_;
 
@@ -54,13 +49,13 @@ sub ev_loop {
 
   $sub->( $cv );
 
-  my $timer;
-  $timer = AE::timer( 3, 0,
+  my $timer = AE::timer( 3, 0,
     sub {
       diag( 'Emergency exit from event loop. Test failed' );
       $cv->send();
     },
   );
+
   $cv->recv();
   undef( $timer );
 
