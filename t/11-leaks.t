@@ -4,6 +4,7 @@ use warnings;
 
 use Test::More;
 use AnyEvent::Redis::RipeRedis qw( :err_codes );
+use Scalar::Util qw( weaken );
 require 't/test_helper.pl';
 
 BEGIN {
@@ -13,152 +14,429 @@ BEGIN {
   }
 }
 
-my $server_info = run_redis_instance();
-if ( !defined( $server_info ) ) {
+my $SERVER_INFO = run_redis_instance();
+if ( !defined( $SERVER_INFO ) ) {
   plan skip_all => 'redis-server is required for this test';
 }
-plan tests => 4;
+plan tests => 10;
 
-my $redis = AnyEvent::Redis::RipeRedis->new(
-  host => $server_info->{host},
-  port => $server_info->{port},
+my $REDIS = AnyEvent::Redis::RipeRedis->new(
+  host => $SERVER_INFO->{host},
+  port => $SERVER_INFO->{port},
 );
 
-t_no_leaks_status_reply( $redis );
-t_no_leaks_mbulk_reply( $redis );
-t_no_leaks_transaction( $redis );
-t_no_leaks_eval_cached( $redis );
+t_leaks_status_reply_mth1( $REDIS );
+t_leaks_status_reply_mth2( $REDIS );
 
-$redis->disconnect();
+t_leaks_bulk_reply_mth1( $REDIS );
+t_leaks_bulk_reply_mth2( $REDIS );
+
+t_leaks_mbulk_reply_mth1( $REDIS );
+t_leaks_mbulk_reply_mth2( $REDIS );
+
+t_leaks_nested_mbulk_reply_mth1( $REDIS );
+t_leaks_nested_mbulk_reply_mth2( $REDIS );
+
+my $ver = get_redis_version( $REDIS );
+
+SKIP: {
+  if ( $ver < 2.00600 ) {
+    skip 'redis-server 2.6 or higher is required for this test', 2;
+  }
+
+  t_leaks_eval_cached_mth1( $REDIS );
+  t_leaks_eval_cached_mth2( $REDIS );
+}
+
+$REDIS->disconnect();
 
 
 ####
-sub t_no_leaks_status_reply {
+sub t_leaks_status_reply_mth1 {
   my $redis = shift;
-
-  ev_loop(
-    sub {
-      my $cv = shift;
-
-      $redis->set( 'foo', 'string', {
-        on_done => sub {
-          $cv->send();
-        }
-      } );
-    }
-  );
 
   no_leaks_ok {
     ev_loop(
       sub {
         my $cv = shift;
 
-        $redis->get( 'bar', {
-          on_done => sub {
-            $cv->send();
+        $redis->set( 'foo', "some\r\nstring",
+          { on_done => sub {
+              my $reply = shift;
+              $cv->send();
+            },
           }
-        } );
-      }
-    );
-  } 'status reply';
+        );
 
-  return;
-}
-
-####
-sub t_no_leaks_mbulk_reply {
-  my $redis = shift;
-
-  ev_loop(
-    sub {
-      my $cv = shift;
-
-      my $oprn_cnt = 0;
-      for ( my $i = 1; $i <= 3; $i++ ) {
-        $redis->rpush( 'list', "element_$i", {
-          on_done => sub {
-            $oprn_cnt++;
-            if ( $oprn_cnt == 3 ) {
+        $redis->del( 'foo',
+          { on_done => sub {
               $cv->send();
             }
           }
-        } );
-      }
-    }
-  );
-
-  no_leaks_ok {
-    ev_loop(
-      sub {
-        my $cv = shift;
-
-        $redis->lrange( 'list', 0, -1, {
-          on_done => sub {
-            $cv->send();
-          },
-        } );
+        );
       }
     );
-  } 'multi-bulk reply';
+  } 'leaks; \'on_done\' used; status reply';
 
   return;
 }
 
 ####
-sub t_no_leaks_transaction {
+sub t_leaks_status_reply_mth2 {
   my $redis = shift;
 
   no_leaks_ok {
     ev_loop(
       sub {
         my $cv = shift;
+
+        $redis->set( 'foo', "some\r\nstring",
+          sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+          }
+        );
+
+        $redis->del( 'foo',
+          sub {
+            my $err_msg = $_[1];
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+
+            $cv->send();
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_reply\' used; status reply';
+
+  return;
+}
+
+####
+sub t_leaks_bulk_reply_mth1 {
+  my $redis = shift;
+
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        $redis->set( 'foo', "some\r\nstring" );
+
+        $redis->get( 'foo',
+          { on_done => sub {
+              my $reply = shift;
+            },
+          }
+        );
+
+        $redis->del( 'foo',
+          { on_done => sub {
+              $cv->send();
+            }
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_done\' used; bulk reply';
+
+  return;
+}
+
+####
+sub t_leaks_bulk_reply_mth2 {
+  my $redis = shift;
+
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        $redis->set( 'foo', "some\r\nstring" );
+
+        $redis->get( 'foo',
+          sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+          }
+        );
+
+        $redis->del( 'foo',
+          sub {
+            my $err_msg = $_[1];
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+
+            $cv->send();
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_reply\' used; bulk reply';
+
+  return;
+}
+
+####
+sub t_leaks_mbulk_reply_mth1 {
+  my $redis = shift;
+
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        for ( my $i = 1; $i <= 3; $i++ ) {
+          $redis->rpush( 'list', "element_$i" );
+        }
+
+        $redis->lrange( 'list', 0, -1,
+          { on_done => sub {
+              my $reply = shift;
+            },
+          }
+        );
+
+        $redis->del( 'list',
+          { on_done => sub {
+              $cv->send();
+            }
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_done\' used; multi-bulk reply';
+
+  return;
+}
+
+####
+sub t_leaks_mbulk_reply_mth2 {
+  my $redis = shift;
+
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        for ( my $i = 1; $i <= 3; $i++ ) {
+          $redis->rpush( 'list', "element_$i" );
+        }
+
+        $redis->lrange( 'list', 0, -1,
+          sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+          }
+        );
+
+        $redis->del( 'list',
+          sub {
+            my $err_msg = $_[1];
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+
+            $cv->send();
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_reply\' used; multi-bulk reply';
+
+  return;
+}
+
+####
+sub t_leaks_nested_mbulk_reply_mth1 {
+  my $redis = shift;
+
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        for ( my $i = 1; $i <= 3; $i++ ) {
+          $redis->rpush( 'list', "element_$i" );
+        }
+
+        $redis->set( 'foo', "some\r\nstring" );
 
         $redis->multi();
+        $redis->incr( 'bar' );
+        $redis->lrange( 'list', 0, -1 );
+        $redis->lrange( 'non_existent', 0, -1 );
         $redis->get( 'foo' );
         $redis->lrange( 'list', 0, -1 );
-        $redis->get( 'foo' );
-        $redis->lrange( 'list', 0, -1 );
-        $redis->exec( {
-          on_done => sub {
-            $cv->send();
-          },
-        } );
+        $redis->exec(
+          { on_done => sub {
+              my $reply = shift;
+            },
+          }
+        );
+
+        $redis->del( qw( foo list bar ),
+          { on_done => sub {
+              $cv->send();
+            },
+          }
+        );
       }
     );
-  } 'transaction';
+  } 'leaks; \'on_done\' used; nested multi-bulk reply';
 
   return;
 }
 
 ####
-sub t_no_leaks_eval_cached {
+sub t_leaks_nested_mbulk_reply_mth2 {
   my $redis = shift;
 
-  my $ver = get_redis_version( $redis );
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
 
-  SKIP: {
-    if ( $ver < 2.00600 ) {
-      skip 'redis-server 2.6 or higher is required for this test', 1;
-    }
+        for ( my $i = 1; $i <= 3; $i++ ) {
+          $redis->rpush( 'list', "element_$i" );
+        }
 
-    my $script = <<LUA
+        $redis->set( 'foo', "some\r\nstring" );
+
+        $redis->multi();
+        $redis->incr( 'bar' );
+        $redis->lrange( 'list', 0, -1 );
+        $redis->lrange( 'non_existent', 0, -1 );
+        $redis->get( 'foo' );
+        $redis->lrange( 'list', 0, -1 );
+        $redis->exec(
+          sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+          },
+        );
+
+        $redis->del( qw( foo list bar ),
+          sub {
+            my $err_msg = $_[1];
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+            }
+
+            $cv->send();
+          }
+        );
+      }
+    );
+  } 'leaks; \'on_reply\' used; nested multi-bulk reply';
+
+  return;
+}
+
+####
+sub t_leaks_eval_cached_mth1 {
+  my $redis = shift;
+
+  my $script = <<LUA
 return ARGV[1]
 LUA
 ;
-    no_leaks_ok {
-      ev_loop(
-        sub {
-          my $cv = shift;
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
 
-          $redis->eval_cached( $script, 0, 42, {
-            on_done => sub {
-              $cv->send();
+        my $redis = $redis;
+        weaken( $redis );
+
+        $redis->eval_cached( $script, 0, 42,
+          { on_done => sub {
+              my $reply = shift;
+
+              $redis->eval_cached( $script, 0, 57,
+                {
+                  on_done => sub {
+                    my $reply = shift;
+                    $cv->send();
+                  },
+                }
+              );
             },
-          } );
-        }
-      );
-    } 'eval_cached';
-  }
+          }
+        );
+      }
+    );
+  } 'leaks; eval_cached; \'on_done\' used';
+
+  return;
+}
+
+####
+sub t_leaks_eval_cached_mth2 {
+  my $redis = shift;
+
+  my $script = <<LUA
+return ARGV[1]
+LUA
+;
+  no_leaks_ok {
+    ev_loop(
+      sub {
+        my $cv = shift;
+
+        my $redis = $redis;
+        weaken( $redis );
+
+        $redis->eval_cached( $script, 0, 42,
+          sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+              return;
+            }
+
+            $redis->eval_cached( $script, 0, 57,
+              sub {
+                my $reply   = shift;
+                my $err_msg = shift;
+
+                if ( defined( $err_msg ) ) {
+                  diag( $err_msg );
+                }
+
+                $cv->send();
+              }
+            );
+          }
+        );
+      }
+    );
+  } 'leaks; eval_cached; \'on_reply\' used';
 
   return;
 }

@@ -6,32 +6,35 @@ use Test::More;
 use AnyEvent::Redis::RipeRedis qw( :err_codes );
 require 't/test_helper.pl';
 
-my $server_info = run_redis_instance();
-if ( !defined( $server_info ) ) {
+my $SERVER_INFO = run_redis_instance();
+if ( !defined( $SERVER_INFO ) ) {
   plan skip_all => 'redis-server is required for this test';
 }
-plan tests => 8;
+plan tests => 14;
 
-my $r_consum = AnyEvent::Redis::RipeRedis->new(
-  host => $server_info->{host},
-  port => $server_info->{port},
+my $R_CONSUM = AnyEvent::Redis::RipeRedis->new(
+  host => $SERVER_INFO->{host},
+  port => $SERVER_INFO->{port},
 );
-my $r_transm = AnyEvent::Redis::RipeRedis->new(
-  host => $server_info->{host},
-  port => $server_info->{port},
+my $R_TRANSM = AnyEvent::Redis::RipeRedis->new(
+  host => $SERVER_INFO->{host},
+  port => $SERVER_INFO->{port},
 );
 
-t_sub_unsub( $r_consum, $r_transm );
-t_psub_punsub( $r_consum, $r_transm );
+t_sub_unsub_mth1( $R_CONSUM, $R_TRANSM );
+t_sub_unsub_mth2( $R_CONSUM, $R_TRANSM );
 
-$r_consum->disconnect();
-$r_transm->disconnect();
+t_psub_punsub_mth1( $R_CONSUM, $R_TRANSM );
+t_psub_punsub_mth2( $R_CONSUM, $R_TRANSM );
 
-t_sub_after_multi( $server_info );
+$R_CONSUM->disconnect();
+$R_TRANSM->disconnect();
+
+t_sub_after_multi( $SERVER_INFO );
 
 
 ####
-sub t_sub_unsub {
+sub t_sub_unsub_mth1 {
   my $r_consum = shift;
   my $r_transm = shift;
 
@@ -42,57 +45,62 @@ sub t_sub_unsub {
     sub {
       my $cv = shift;
 
-      my $done_cnt = 0;
+      my $msg_cnt = 0;
 
-      $r_consum->subscribe( qw( ch_foo ch_bar ), {
-        on_done =>  sub {
-          my $ch_name = shift;
-          my $subs_num = shift;
+      $r_consum->subscribe( qw( ch_foo ch_bar ),
+        { on_done => sub {
+            my $ch_name  = shift;
+            my $subs_num = shift;
 
-          push( @t_sub_data, {
-            ch_name => $ch_name,
-            subs_num => $subs_num,
-          } );
-          $r_transm->publish( $ch_name, "test$subs_num" );
-        },
+            push( @t_sub_data,
+              { ch_name  => $ch_name,
+                subs_num => $subs_num,
+              }
+            );
 
-        on_message => sub {
-          my $ch_name = shift;
-          my $msg = shift;
+            $r_transm->publish( $ch_name, "test$subs_num" );
+          },
 
-          push( @t_sub_msgs, {
-            ch_name => $ch_name,
-            message => $msg,
-          } );
-          if ( ++$done_cnt == 2 ) {
-            $cv->send();
-          }
-        },
-      } );
+          on_message => sub {
+            my $ch_name = shift;
+            my $msg     = shift;
+
+            push( @t_sub_msgs,
+              { ch_name => $ch_name,
+                message => $msg,
+              }
+            );
+
+            if ( ++$msg_cnt == 2 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
     }
   );
 
-  is_deeply( \@t_sub_data, [
-    {
-      ch_name => 'ch_foo',
-      subs_num => 1,
-    },
-    {
-      ch_name => 'ch_bar',
-      subs_num => 2,
-    },
-  ], 'SUBSCRIBE' );
+  is_deeply( \@t_sub_data,
+    [ { ch_name  => 'ch_foo',
+        subs_num => 1,
+      },
+      { ch_name  => 'ch_bar',
+        subs_num => 2,
+      },
+    ],
+    'SUBSCRIBE; on_done used'
+  );
 
-  is_deeply( \@t_sub_msgs, [
-    {
-      ch_name => 'ch_foo',
-      message => 'test1',
-    },
-    {
-      ch_name => 'ch_bar',
-      message => 'test2',
-    },
-  ], 'publish message' );
+  is_deeply( \@t_sub_msgs,
+    [ { ch_name => 'ch_foo',
+        message => 'test1',
+      },
+      { ch_name => 'ch_bar',
+        message => 'test2',
+      },
+    ],
+    'publish message from on_done'
+  );
 
   my @t_unsub_data;
 
@@ -100,140 +108,460 @@ sub t_sub_unsub {
     sub {
       my $cv = shift;
 
-      $r_consum->unsubscribe( qw( ch_foo ch_bar ), {
-        on_done => sub {
-          my $ch_name = shift;
-          my $subs_num = shift;
+      $r_consum->unsubscribe( qw( ch_foo ch_bar ),
+        { on_done => sub {
+            my $ch_name  = shift;
+            my $subs_num = shift;
 
-          push( @t_unsub_data, {
-            ch_name => $ch_name,
-            subs_num => $subs_num,
-          } );
-          if ( $subs_num == 0 ) {
-            $cv->send();
-          }
-        },
-      } );
+            push( @t_unsub_data,
+              { ch_name  => $ch_name,
+                subs_num => $subs_num,
+              }
+            );
+
+            if ( $subs_num == 0 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
     }
   );
 
-  is_deeply( \@t_unsub_data, [
-    {
-      ch_name => 'ch_foo',
-      subs_num => 1,
-    },
-    {
-      ch_name => 'ch_bar',
-      subs_num => 0,
-    },
-  ], 'UNSUBSCRIBE' );
+  is_deeply( \@t_unsub_data,
+    [ { ch_name  => 'ch_foo',
+        subs_num => 1,
+      },
+      { ch_name  => 'ch_bar',
+        subs_num => 0,
+      },
+    ],
+    'UNSUBSCRIBE; on_done used'
+  );
 
   return;
 }
 
 ####
-sub t_psub_punsub {
+sub t_sub_unsub_mth2 {
   my $r_consum = shift;
   my $r_transm = shift;
 
-  my @t_psub_data;
-  my @t_psub_msgs;
+  my @t_sub_data;
+  my @t_sub_msgs;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      my $done_cnt = 0;
+      my $msg_cnt = 0;
 
-      $r_consum->psubscribe( qw( info_* err_* ), {
-        on_done =>  sub {
-          my $ch_pattern = shift;
-          my $subs_num = shift;
-
-          push( @t_psub_data, {
-            ch_pattern => $ch_pattern,
-            subs_num => $subs_num,
-          } );
-          my $ch_name = $ch_pattern;
-          $ch_name =~ s/\*/some/o;
-          $r_transm->publish( $ch_name, "test$subs_num" );
-        },
-
-        on_message => sub {
+      $r_consum->subscribe( qw( ch_foo ch_bar ),
+        sub {
           my $ch_name = shift;
-          my $msg = shift;
-          my $ch_pattern = shift;
+          my $msg     = shift;
 
-          push( @t_psub_msgs, {
-            ch_name => $ch_name,
-            message => $msg,
-            ch_pattern => $ch_pattern,
-          } );
-          if ( ++$done_cnt == 2 ) {
-            $cv->send();
-          }
-        },
-      } );
+          push( @t_sub_msgs,
+            { ch_name => $ch_name,
+              message => $msg,
+            }
+          );
+
+          $msg_cnt++;
+        }
+      );
+
+      $r_consum->subscribe( qw( ch_events ch_signals ),
+        { on_reply => sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+              return;
+            }
+
+            push( @t_sub_data,
+              { ch_name  => $reply->[0],
+                subs_num => $reply->[1],
+              }
+            );
+
+            if ( $reply->[0] eq 'ch_events' ) {
+              $r_transm->publish( 'ch_foo', 'test1' );
+              $r_transm->publish( 'ch_bar', 'test2' );
+            }
+            $r_transm->publish( $reply->[0], "test$reply->[1]" );
+          },
+
+          on_message => sub {
+            my $ch_name = shift;
+            my $msg     = shift;
+
+            push( @t_sub_msgs,
+              { ch_name => $ch_name,
+                message => $msg,
+              }
+            );
+
+            if ( ++$msg_cnt == 4 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
     }
   );
 
-  is_deeply( \@t_psub_data, [
-    {
-      ch_pattern => 'info_*',
-      subs_num => 1,
-    },
-    {
-      ch_pattern => 'err_*',
-      subs_num => 2,
-    }
-  ], 'PSUBSCRIBE' );
+  is_deeply( \@t_sub_data,
+    [ { ch_name  => 'ch_events',
+        subs_num => 3,
+      },
+      { ch_name  => 'ch_signals',
+        subs_num => 4,
+      },
+    ],
+    'SUBSCRIBE; on_reply used'
+  );
 
-  is_deeply( \@t_psub_msgs, [
-    {
-      ch_name => 'info_some',
-      message => 'test1',
-      ch_pattern => 'info_*',
-    },
-    {
-      ch_name => 'err_some',
-      message => 'test2',
-      ch_pattern => 'err_*',
-    },
-  ], 'publish pmessage' );
+  is_deeply( \@t_sub_msgs,
+    [ { ch_name => 'ch_foo',
+        message => 'test1',
+      },
+      { ch_name => 'ch_bar',
+        message => 'test2',
+      },
+      { ch_name => 'ch_events',
+        message => 'test3',
+      },
 
-  my @t_punsub_data;
+      { ch_name => 'ch_signals',
+        message => 'test4',
+      },
+    ],
+    'publish message from on_reply'
+  );
+
+  my @t_unsub_data;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $r_consum->punsubscribe( qw( info_* err_* ), {
-        on_done => sub {
-          my $ch_pattern = shift;
-          my $subs_num = shift;
+      $r_consum->unsubscribe( qw( ch_foo ch_bar ch_events ch_signals ),
+        sub {
+          my $reply   = shift;
+          my $err_msg = shift;
 
-          push( @t_punsub_data, {
-            ch_pattern => $ch_pattern,
-            subs_num => $subs_num,
-          } );
-          if ( $subs_num == 0 ) {
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+            return;
+          }
+
+          push( @t_unsub_data,
+            { ch_name  => $reply->[0],
+              subs_num => $reply->[1],
+            }
+          );
+
+          if ( $reply->[1] == 0 ) {
             $cv->send();
           }
-        },
-      } );
+        }
+      );
     }
   );
 
-  is_deeply( \@t_punsub_data, [
-    {
-      ch_pattern => 'info_*',
-      subs_num => 1,
-    },
-    {
-      ch_pattern => 'err_*',
-      subs_num => 0,
-    },
-  ], 'PUNSUBSCRIBE' );
+  is_deeply( \@t_unsub_data,
+    [ { ch_name  => 'ch_foo',
+        subs_num => 3,
+      },
+      { ch_name  => 'ch_bar',
+        subs_num => 2,
+      },
+      { ch_name  => 'ch_events',
+        subs_num => 1,
+      },
+      { ch_name  => 'ch_signals',
+        subs_num => 0,
+      },
+    ],
+    'UNSUBSCRIBE; on_reply used'
+  );
+
+  return;
+}
+
+####
+sub t_psub_punsub_mth1 {
+  my $r_consum = shift;
+  my $r_transm = shift;
+
+  my @t_sub_data;
+  my @t_sub_msgs;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      my $msg_cnt = 0;
+
+      $r_consum->psubscribe( qw( foo_* bar_* ),
+        { on_done => sub {
+            my $ch_pattern = shift;
+            my $subs_num   = shift;
+
+            push( @t_sub_data,
+              { ch_pattern => $ch_pattern,
+                subs_num   => $subs_num,
+              }
+            );
+
+            my $ch_name = $ch_pattern;
+            $ch_name =~ s/\*/test/;
+            $r_transm->publish( $ch_name, "test$subs_num" );
+          },
+
+          on_message => sub {
+            my $ch_name    = shift;
+            my $msg        = shift;
+            my $ch_pattern = shift;
+
+            push( @t_sub_msgs,
+              { ch_name    => $ch_name,
+                message    => $msg,
+                ch_pattern => $ch_pattern,
+              }
+            );
+
+            if ( ++$msg_cnt == 2 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
+    }
+  );
+
+  is_deeply( \@t_sub_data,
+    [ { ch_pattern => 'foo_*',
+        subs_num   => 1,
+      },
+      { ch_pattern => 'bar_*',
+        subs_num   => 2,
+      },
+    ],
+    'PSUBSCRIBE; on_done used'
+  );
+
+  is_deeply( \@t_sub_msgs,
+    [ { ch_name    => 'foo_test',
+        message    => 'test1',
+        ch_pattern => 'foo_*',
+      },
+      { ch_name    => 'bar_test',
+        message    => 'test2',
+        ch_pattern => 'bar_*',
+      },
+    ],
+    'publish message from on_done'
+  );
+
+  my @t_unsub_data;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $r_consum->punsubscribe( qw( foo_* bar_* ),
+        { on_done => sub {
+            my $ch_pattern = shift;
+            my $subs_num   = shift;
+
+            push( @t_unsub_data,
+              { ch_pattern => $ch_pattern,
+                subs_num   => $subs_num,
+              }
+            );
+
+            if ( $subs_num == 0 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
+    }
+  );
+
+  is_deeply( \@t_unsub_data,
+    [ { ch_pattern => 'foo_*',
+        subs_num   => 1,
+      },
+      { ch_pattern => 'bar_*',
+        subs_num   => 0,
+      },
+    ],
+    'PUNSUBSCRIBE; on_done used'
+  );
+
+  return;
+}
+
+####
+sub t_psub_punsub_mth2 {
+  my $r_consum = shift;
+  my $r_transm = shift;
+
+  my @t_sub_data;
+  my @t_sub_msgs;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      my $msg_cnt = 0;
+
+      $r_consum->psubscribe( qw( foo_* bar_* ),
+        sub {
+          my $ch_name    = shift;
+          my $msg        = shift;
+          my $ch_pattern = shift;
+
+          push( @t_sub_msgs,
+            { ch_name    => $ch_name,
+              message    => $msg,
+              ch_pattern => $ch_pattern,
+            }
+          );
+
+          $msg_cnt++;
+        }
+      );
+
+      $r_consum->psubscribe( qw( events_* signals_* ),
+        { on_reply => sub {
+            my $reply   = shift;
+            my $err_msg = shift;
+
+            if ( defined( $err_msg ) ) {
+              diag( $err_msg );
+              return;
+            }
+
+            push( @t_sub_data,
+              { ch_pattern => $reply->[0],
+                subs_num   => $reply->[1],
+              }
+            );
+
+            if ( $reply->[0] eq 'events_*' ) {
+              $r_transm->publish( 'foo_test', 'test1' );
+              $r_transm->publish( 'bar_test', 'test2' );
+            }
+            my $ch_name = $reply->[0];
+            $ch_name =~ s/\*/test/;
+            $r_transm->publish( $ch_name, "test$reply->[1]" );
+          },
+
+          on_message => sub {
+            my $ch_name    = shift;
+            my $msg        = shift;
+            my $ch_pattern = shift;
+
+            push( @t_sub_msgs,
+              { ch_name    => $ch_name,
+                message    => $msg,
+                ch_pattern => $ch_pattern,
+              }
+            );
+
+            if ( ++$msg_cnt == 4 ) {
+              $cv->send();
+            }
+          },
+        }
+      );
+    }
+  );
+
+  is_deeply( \@t_sub_data,
+    [ { ch_pattern => 'events_*',
+        subs_num   => 3,
+      },
+      { ch_pattern => 'signals_*',
+        subs_num   => 4,
+      },
+    ],
+    'PSUBSCRIBE; on_reply used'
+  );
+
+  is_deeply( \@t_sub_msgs,
+    [ { ch_name    => 'foo_test',
+        message    => 'test1',
+        ch_pattern => 'foo_*',
+      },
+      { ch_name    => 'bar_test',
+        message    => 'test2',
+        ch_pattern => 'bar_*',
+      },
+      { ch_name    => 'events_test',
+        message    => 'test3',
+        ch_pattern => 'events_*',
+      },
+      { ch_name    => 'signals_test',
+        message    => 'test4',
+        ch_pattern => 'signals_*',
+      },
+    ],
+    'publish message from on_reply'
+  );
+
+  my @t_unsub_data;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $r_consum->punsubscribe( qw( foo_* bar_* events_* signals_* ),
+        sub {
+          my $reply   = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+            return;
+          }
+
+          push( @t_unsub_data,
+            { ch_pattern => $reply->[0],
+              subs_num   => $reply->[1],
+            }
+          );
+
+          if ( $reply->[1] == 0 ) {
+            $cv->send();
+          }
+        }
+      );
+    }
+  );
+
+  is_deeply( \@t_unsub_data,
+    [ { ch_pattern => 'foo_*',
+        subs_num   => 3,
+      },
+      { ch_pattern => 'bar_*',
+        subs_num   => 2,
+      },
+      { ch_pattern => 'events_*',
+        subs_num   => 1,
+      },
+      { ch_pattern => 'signals_*',
+        subs_num   => 0,
+      },
+    ],
+    'PUNSUBSCRIBE; on_reply used'
+  );
 
   return;
 }
@@ -258,16 +586,19 @@ sub t_sub_after_multi {
       my $cv = shift;
 
       $redis->multi();
-      $redis->subscribe( 'channel', {
-        on_message => sub {
-          # fake callback
-        },
-        on_error => sub {
-          $t_err_msg = shift;
-          $t_err_code = shift;
-          $cv->send();
-        },
-      } );
+      $redis->subscribe( 'channel',
+        { on_message => sub {
+            # empty callback
+          },
+
+          on_error => sub {
+            $t_err_msg  = shift;
+            $t_err_code = shift;
+
+            $cv->send();
+          },
+        }
+      );
     }
   );
 

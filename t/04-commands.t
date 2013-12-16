@@ -7,328 +7,958 @@ use Test::More;
 use AnyEvent::Redis::RipeRedis qw( :err_codes );
 require 't/test_helper.pl';
 
-my $server_info = run_redis_instance();
-if ( !defined( $server_info ) ) {
+my $SERVER_INFO = run_redis_instance();
+if ( !defined( $SERVER_INFO ) ) {
   plan skip_all => 'redis-server is required for this test';
 }
-plan tests => 22;
+plan tests => 48;
 
-my $redis;
-my $t_is_conn = 0;
-my $t_is_disconn = 0;
+my $REDIS;
+my $T_IS_CONN = 0;
+my $T_IS_DISCONN = 0;
 
 ev_loop(
   sub {
     my $cv = shift;
 
-    $redis = AnyEvent::Redis::RipeRedis->new(
-      host => $server_info->{host},
-      port => $server_info->{port},
+    $REDIS = AnyEvent::Redis::RipeRedis->new(
+      host               => $SERVER_INFO->{host},
+      port               => $SERVER_INFO->{port},
       connection_timeout => 5,
-      read_timeout => 5,
-      encoding => 'utf8',
+      read_timeout       => 5,
+      encoding           => 'utf8',
+
       on_connect => sub {
-        $t_is_conn = 1;
+        $T_IS_CONN = 1;
         $cv->send();
       },
       on_disconnect => sub {
-        $t_is_disconn = 1;
+        $T_IS_DISCONN = 1;
       },
     );
   },
 );
 
-ok( $t_is_conn, 'connected' );
+ok( $T_IS_CONN, 'on_connect' );
 
-t_ping( $redis );
-t_incr( $redis );
-t_set_get( $redis );
-t_set_get_undef( $redis );
-t_set_get_utf8( $redis );
-t_get_non_existent( $redis );
-t_lrange( $redis );
-t_get_empty_list( $redis );
-t_mbulk_undef( $redis );
-t_transaction( $redis );
-t_command_error( $redis );
-t_default_on_error( $redis );
-t_error_after_exec( $redis );
-t_quit( $redis );
+t_status_reply_mth1( $REDIS );
+t_status_reply_mth2( $REDIS );
+
+t_numeric_reply_mth1( $REDIS );
+t_numeric_reply_mth2( $REDIS );
+
+t_bulk_reply_mth1( $REDIS );
+t_bulk_reply_mth2( $REDIS );
+
+t_set_undef_mth1( $REDIS );
+t_set_undef_mth2( $REDIS );
+
+t_get_undef_mth1( $REDIS );
+t_get_undef_mth2( $REDIS );
+
+t_set_utf8_string_mth1( $REDIS );
+t_set_utf8_string_mth2( $REDIS );
+
+t_get_utf8_string_mth1( $REDIS );
+t_get_utf8_string_mth2( $REDIS );
+
+t_get_non_existent_mth1( $REDIS );
+t_get_non_existent_mth2( $REDIS );
+
+t_mbulk_reply_mth1( $REDIS );
+t_mbulk_reply_mth2( $REDIS );
+
+t_mbulk_reply_empty_list_mth1( $REDIS );
+t_mbulk_reply_empty_list_mth2( $REDIS );
+
+t_mbulk_reply_undef_mth1( $REDIS );
+t_mbulk_reply_undef_mth2( $REDIS );
+
+t_nested_mbulk_reply_mth1( $REDIS );
+t_nested_mbulk_reply_mth2( $REDIS );
+
+t_oprn_error_mth1( $REDIS );
+t_oprn_error_mth2( $REDIS );
+
+t_default_on_error( $REDIS );
+
+t_error_after_exec_mth1( $REDIS );
+t_error_after_exec_mth2( $REDIS );
+
+t_quit( $REDIS );
 
 
 ####
-sub t_ping {
+sub t_status_reply_mth1 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->ping( {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+      $redis->set( 'foo', "some\r\nstring",
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'foo',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
     }
   );
 
-  is( $t_data, 'PONG', 'PING; status reply' );
+  is( $t_reply, 'OK', 'SET; \'on_done\' used; status reply' );
 
   return;
 }
 
 ####
-sub t_incr {
+sub t_status_reply_mth2 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->incr( 'foo', {
-        on_done => sub {
-          $t_data = shift;
+      $redis->set( 'foo', "some\r\nstring",
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        }
+      );
+
+      $redis->del( 'foo',
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
           $cv->send();
-        },
-      } );
+        }
+      );
     }
   );
 
-  is( $t_data, 1, 'INCR; numeric reply' );
+  is( $t_reply, 'OK', 'SET; \'on_reply\' used; status reply' );
 
   return;
 }
 
 ####
-sub t_set_get {
+sub t_numeric_reply_mth1 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->set( 'bar', "some\r\nstring" );
-      $redis->get( 'bar', {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+      $redis->incr( 'bar',
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'bar',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
     }
   );
 
-  is( $t_data, "some\r\nstring", 'GET; bulk reply' );
+  is( $t_reply, 1, 'INCR; \'on_done\' used; numeric reply' );
 
   return;
 }
 
 ####
-sub t_set_get_undef {
+sub t_numeric_reply_mth2 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->set( 'empty', undef );
-      $redis->get( 'empty', {
-        on_done => sub {
-          $t_data = shift;
+      $redis->incr( 'bar',
+        sub {
+          $t_reply    = shift;
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        }
+      );
+
+      $redis->del( 'bar',
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
           $cv->send();
-        },
-      } );
+        }
+      );
     }
   );
 
-  is( $t_data, '', 'SET/GET undef' );
+  is( $t_reply, 1, 'INCR; \'on_reply\' used; numeric reply' );
 
   return;
 }
 
 ####
-sub t_set_get_utf8 {
+sub t_bulk_reply_mth1 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'foo', "some\r\nstring" );
+
+      $redis->get( 'foo',
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'foo',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
+    }
+  );
+
+  is( $t_reply, "some\r\nstring", 'GET; \'on_done\' used; bulk reply' );
+
+  return;
+}
+
+####
+sub t_bulk_reply_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'foo', "some\r\nstring" );
+
+      $redis->get( 'foo',
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        }
+      );
+
+      $redis->del( 'foo',
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  is( $t_reply, "some\r\nstring", 'GET; \'on_reply\' used; bulk reply' );
+
+  return;
+}
+
+####
+sub t_set_undef_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'empty', undef,
+        { on_done => sub {
+            $t_reply = shift;
+            $cv->send();
+          },
+        }
+      );
+    }
+  );
+
+  is( $t_reply, 'OK', 'SET; \'on_done\' used; undef' );
+
+  return;
+}
+
+####
+sub t_set_undef_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'empty', undef,
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        },
+      );
+    }
+  );
+
+  is( $t_reply, 'OK', 'SET; \'on_reply\' used; undef' );
+
+  return;
+}
+
+####
+sub t_get_undef_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->get( 'empty',
+        { on_done => sub {
+            $t_reply = shift;
+
+            $cv->send();
+          },
+        }
+      );
+    }
+  );
+
+  is( $t_reply, '', 'GET; \'on_done\' used; undef' );
+
+  return;
+}
+
+####
+sub t_get_undef_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->get( 'empty',
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  is( $t_reply, '', 'GET; \'on_reply\' used; undef' );
+
+  return;
+}
+
+####
+sub t_set_utf8_string_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'ключ', 'Значение',
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'ключ',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
+    }
+  );
+
+  is( $t_reply, 'OK', 'SET; \'on_done\' used; UTF-8 string' );
+
+  return;
+}
+
+####
+sub t_set_utf8_string_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->set( 'ключ', 'Значение',
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        },
+      );
+
+      $redis->del( 'ключ',
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  is( $t_reply, 'OK', 'SET; \'on_reply\' used; UTF-8 string' );
+
+  return;
+}
+
+####
+sub t_get_utf8_string_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
       $redis->set( 'ключ', 'Значение' );
-      $redis->get( 'ключ', {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+
+      $redis->get( 'ключ',
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'ключ',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
     }
   );
 
-  is( $t_data, 'Значение', 'SET/GET UTF-8 string' );
+  is( $t_reply, 'Значение', 'GET; \'on_done\' used; UTF-8 string' );
 
   return;
 }
 
 ####
-sub t_get_non_existent {
+sub t_get_utf8_string_mth2 {
   my $redis = shift;
 
-  my $t_data = 'not_ubdef';
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->get( 'non_existent', {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
-    }
-  );
+      $redis->set( 'ключ', 'Значение' );
 
-  is( $t_data, undef, 'GET non existent key' );
+      $redis->get( 'ключ',
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
 
-  return;
-}
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        }
+      );
 
-####
-sub t_lrange {
-  my $redis = shift;
+      $redis->del( 'ключ',
+        sub {
+          my $err_msg = $_[1];
 
-  my $t_data;
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
 
-  ev_loop(
-    sub {
-      my $cv = shift;
-
-      for ( my $i = 2; $i <= 3; $i++ ) {
-        $redis->rpush( 'list', "element_$i" );
-      }
-      $redis->lpush( 'list', 'element_1' );
-      $redis->lrange( 'list', 0, -1, {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
-    }
-  );
-
-  is_deeply( $t_data, [ qw(
-    element_1
-    element_2
-    element_3
-  ) ], 'LRANGE; multi-bulk reply' );
-
-  return;
-}
-
-####
-sub t_get_empty_list {
-  my $redis = shift;
-
-  my $t_data;
-
-  ev_loop(
-    sub {
-      my $cv = shift;
-
-      $redis->lrange( 'non_existent', 0, -1, {
-        on_done => sub {
-          $t_data = shift;
           $cv->send();
         }
-      } );
+      );
+    }
+  );
+
+  is( $t_reply, 'Значение', 'GET; \'on_reply\' used; UTF-8 string' );
+
+  return;
+}
+
+####
+sub t_get_non_existent_mth1 {
+  my $redis = shift;
+
+  my $t_reply = 'not_undef';
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->get( 'non_existent',
+        { on_done => sub {
+            $t_reply = shift;
+            $cv->send();
+          },
+        }
+      );
+    }
+  );
+
+  is( $t_reply, undef, 'GET; \'on_done\' used; non existent key' );
+
+  return;
+}
+
+####
+sub t_get_non_existent_mth2 {
+  my $redis = shift;
+
+  my $t_reply   = 'not_undef';
+  my $t_err_msg = 'not_undef';
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->get( 'non_existent',
+        sub {
+          $t_reply   = shift;
+          $t_err_msg = shift;
+
+          if ( defined( $t_err_msg ) ) {
+            diag( $t_err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  ok( !defined( $t_reply ) && !defined( $t_err_msg ),
+      'GET; \'on_reply\' used; non existent key' );
+
+  return;
+}
+
+####
+sub t_mbulk_reply_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      for ( my $i = 1; $i <= 3; $i++ ) {
+        $redis->rpush( 'list', "element_$i" );
+      }
+
+      $redis->lrange( 'list', 0, -1,
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( 'list',
+        { on_done => sub {
+            $cv->send();
+          }
+        }
+      );
+    }
+  );
+
+  is_deeply( $t_reply,
+    [ qw(
+        element_1
+        element_2
+        element_3
+      )
+    ],
+    'LRANGE; \'on_done\' used; multi-bulk reply'
+  );
+
+  return;
+}
+
+####
+sub t_mbulk_reply_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      for ( my $i = 1; $i <= 3; $i++ ) {
+        $redis->rpush( 'list', "element_$i" );
+      }
+
+      $redis->lrange( 'list', 0, -1,
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        }
+      );
+
+      $redis->del( 'list',
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  is_deeply( $t_reply,
+    [ qw(
+        element_1
+        element_2
+        element_3
+      )
+    ],
+    'LRANGE; \'on_reply\' used; multi-bulk reply'
+  );
+
+  return;
+}
+
+####
+sub t_mbulk_reply_empty_list_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->lrange( 'non_existent', 0, -1,
+        { on_done => sub {
+            $t_reply = shift;
+            $cv->send();
+          },
+        }
+      );
     },
   );
 
-  is_deeply( $t_data, [], 'LRANGE; empty list' );
+  is_deeply( $t_reply, [], 'LRANGE; \'on_done\' used; empty list' );
 
   return;
 }
 
 ####
-sub t_mbulk_undef {
+sub t_mbulk_reply_empty_list_mth2 {
   my $redis = shift;
 
-  my $t_data = 'not_undef';
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->brpop( 'non_existent', '1', {
-        on_done => sub {
-          $t_data = shift;
+      $redis->lrange( 'non_existent', 0, -1,
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
           $cv->send();
-        },
-      } );
+        }
+      );
+    },
+  );
+
+  is_deeply( $t_reply, [], 'LRANGE; \'on_reply\' used; empty list' );
+
+  return;
+}
+
+####
+sub t_mbulk_reply_undef_mth1 {
+  my $redis = shift;
+
+  my $t_reply = 'not_undef';
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->brpop( 'non_existent', '1',
+        { on_done => sub {
+            $t_reply = shift;
+            $cv->send();
+          },
+        }
+      );
     }
   );
 
-  is( $t_data, undef, 'BRPOP; multi-bulk undef' );
+  is( $t_reply, undef, 'BRPOP; \'on_done\' used; multi-bulk undef' );
 
   return;
 }
 
 ####
-sub t_transaction {
+sub t_mbulk_reply_undef_mth2 {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply   = 'not_undef';
+  my $t_err_msg = 'not_undef';
 
   ev_loop(
     sub {
       my $cv = shift;
+
+      $redis->brpop( 'non_existent', '1',
+        sub {
+          $t_reply   = shift;
+          $t_err_msg = shift;
+
+          if ( defined( $t_err_msg ) ) {
+            diag( $t_err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  ok( !defined( $t_reply ) && !defined( $t_err_msg ),
+      'BRPOP; \'on_reply\' used; multi-bulk undef' );
+
+  return;
+}
+
+####
+sub t_nested_mbulk_reply_mth1 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      for ( my $i = 1; $i <= 3; $i++ ) {
+        $redis->rpush( 'list', "element_$i" );
+      }
+
+      $redis->set( 'foo', "some\r\nstring" );
 
       $redis->multi();
-      $redis->incr( 'foo' );
+      $redis->incr( 'bar' );
       $redis->lrange( 'list', 0, -1 );
       $redis->lrange( 'non_existent', 0, -1 );
-      $redis->get( 'bar' );
+      $redis->get( 'foo' );
       $redis->lrange( 'list', 0, -1 );
-      $redis->exec( {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+      $redis->exec(
+        { on_done => sub {
+            $t_reply = shift;
+          },
+        }
+      );
+
+      $redis->del( qw( foo list bar ),
+        { on_done => sub {
+            $cv->send();
+          },
+        }
+      );
     }
   );
 
-  is_deeply( $t_data, [
-    2,
-    [ qw(
-      element_1
-      element_2
-      element_3
-    ) ],
-    [],
-    "some\r\nstring",
-    [ qw(
-      element_1
-      element_2
-      element_3
-    ) ],
-  ], 'EXEC; nested multi-bulk reply' );
+  is_deeply( $t_reply,
+    [ 1,
+      [ qw(
+          element_1
+          element_2
+          element_3
+        )
+      ],
+      [],
+      "some\r\nstring",
+      [ qw(
+          element_1
+          element_2
+          element_3
+        )
+      ],
+    ],
+    'EXEC; \'on_done\' used; nested multi-bulk reply'
+  );
 
   return;
 }
 
 ####
-sub t_command_error {
+sub t_nested_mbulk_reply_mth2 {
+  my $redis = shift;
+
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      for ( my $i = 1; $i <= 3; $i++ ) {
+        $redis->rpush( 'list', "element_$i" );
+      }
+
+      $redis->set( 'foo', "some\r\nstring" );
+
+      $redis->multi();
+      $redis->incr( 'bar' );
+      $redis->lrange( 'list', 0, -1 );
+      $redis->lrange( 'non_existent', 0, -1 );
+      $redis->get( 'foo' );
+      $redis->lrange( 'list', 0, -1 );
+      $redis->exec(
+        sub {
+          $t_reply    = shift;
+          my $err_msg = shift;
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+        },
+      );
+
+      $redis->del( qw( foo list bar ),
+        sub {
+          my $err_msg = $_[1];
+
+          if ( defined( $err_msg ) ) {
+            diag( $err_msg );
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  is_deeply( $t_reply,
+    [ 1,
+      [ qw(
+          element_1
+          element_2
+          element_3
+        )
+      ],
+      [],
+      "some\r\nstring",
+      [ qw(
+          element_1
+          element_2
+          element_3
+        )
+      ],
+    ],
+    'EXEC; \'on_reply\' used; nested multi-bulk reply'
+  );
+
+  return;
+}
+
+####
+sub t_oprn_error_mth1 {
   my $redis = shift;
 
   my $t_err_msg;
@@ -338,19 +968,54 @@ sub t_command_error {
     sub {
       my $cv = shift;
 
-      $redis->set( {
-        on_error => sub {
-          $t_err_msg = shift;
-          $t_err_code = shift;
-          $cv->send();
+      # missing argument
+      $redis->set( 'foo',
+        { on_error => sub {
+            $t_err_msg  = shift;
+            $t_err_code = shift;
+
+            $cv->send();
+          },
         }
-      } );
+      );
     }
   );
 
-  my $t_name = 'command error';
-  like( $t_err_msg, qr/^ERR/o, "$t_name; error message" );
-  is( $t_err_code, E_OPRN_ERROR, "$t_name; error code" );
+  ok( defined( $t_err_msg ), 'operation error; \'on_error\' used; error message' );
+  is( $t_err_code, E_OPRN_ERROR, 'operation error; \'on_error\' used; error code' );
+
+  return;
+}
+
+####
+sub t_oprn_error_mth2 {
+  my $redis = shift;
+
+  my $t_err_msg;
+  my $t_err_code;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      # missing argument
+      $redis->set( 'foo',
+        sub {
+          my $reply  = shift;
+          $t_err_msg = shift;
+
+          if ( defined( $t_err_msg ) ) {
+            $t_err_code = shift;
+          }
+
+          $cv->send();
+        }
+      );
+    }
+  );
+
+  ok( defined( $t_err_msg ), 'operation error; \'on_reply\' used; error message' );
+  is( $t_err_code, E_OPRN_ERROR, 'operation error; \'on_reply\' used; error code' );
 
   return;
 }
@@ -378,18 +1043,18 @@ sub t_default_on_error {
 
   undef( $SIG{__WARN__} );
 
-  like( $t_err_msg, qr/^ERR/o, "Default 'on_error' callback" );
+  ok( defined( $t_err_msg ), "Default 'on_error' callback" );
 
   return;
 }
 
 ####
-sub t_error_after_exec {
+sub t_error_after_exec_mth1 {
   my $redis = shift;
 
   my $t_err_msg;
   my $t_err_code;
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
@@ -398,27 +1063,81 @@ sub t_error_after_exec {
       $redis->multi();
       $redis->set( 'foo', 'string' );
       $redis->incr( 'foo' );
-      $redis->exec( {
-        on_error => sub {
-          $t_err_msg = shift;
-          $t_err_code = shift;
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+      $redis->exec(
+        { on_error => sub {
+            $t_err_msg  = shift;
+            $t_err_code = shift;
+            $t_reply    = shift;
+
+            $cv->send();
+          },
+        }
+      );
     }
   );
 
-  my $t_name = 'error after EXEC';
-  my $err_class = 'AnyEvent::Redis::RipeRedis::Error';
-  is( $t_err_msg, "Operation 'exec' completed with errors.",
-      "$t_name; error message" );
-  is( $t_err_code, E_OPRN_ERROR, "$t_name; error code" );
-  is( $t_data->[0], 'OK', "$t_name; status reply" );
-  isa_ok( $t_data->[1], $err_class, "$t_name;" );
-  like( $t_data->[1]->message(), qr/^ERR/o,
-      "$t_name; nested error message" );
-  is( $t_data->[1]->code(), E_OPRN_ERROR, "$t_name; nested error code" );
+  is( $t_err_msg, 'Operation \'exec\' completed with errors.',
+      'error after EXEC; \'on_error\' used; error message' );
+  is( $t_err_code, E_OPRN_ERROR,
+      'error after EXEC; \'on_error\' used; error code' );
+  is( $t_reply->[0], 'OK', 'error after EXEC; \'on_error\' used; status reply' );
+
+  isa_ok( $t_reply->[1], 'AnyEvent::Redis::RipeRedis::Error',
+      'error after EXEC; \'on_error\' used;' );
+  can_ok( $t_reply->[1], 'code' );
+  can_ok( $t_reply->[1], 'message' );
+  ok( defined( $t_reply->[1]->message() ),
+      'error after EXEC; \'on_error\' used; nested error message' );
+  is( $t_reply->[1]->code(), E_OPRN_ERROR,
+      'error after EXEC; \'on_error\' used; nested error message' );
+
+  return;
+}
+
+####
+sub t_error_after_exec_mth2 {
+  my $redis = shift;
+
+  my $t_err_msg;
+  my $t_err_code;
+  my $t_reply;
+
+  ev_loop(
+    sub {
+      my $cv = shift;
+
+      $redis->multi();
+      $redis->set( 'foo', 'string' );
+      $redis->incr( 'foo' );
+      $redis->exec(
+        sub {
+          $t_reply   = shift;
+          $t_err_msg = shift;
+
+          if ( defined( $t_err_msg ) ) {
+            $t_err_code = shift;
+          }
+
+          $cv->send();
+        },
+      );
+    }
+  );
+
+  is( $t_err_msg, 'Operation \'exec\' completed with errors.',
+      'error after EXEC; \'on_reply\' used; error message' );
+  is( $t_err_code, E_OPRN_ERROR,
+      'error after EXEC; \'on_reply\' used; error code' );
+  is( $t_reply->[0], 'OK', 'error after EXEC; \'on_reply\' used; status reply' );
+
+  isa_ok( $t_reply->[1], 'AnyEvent::Redis::RipeRedis::Error',
+      'error after EXEC; \'on_reply\' used;' );
+  can_ok( $t_reply->[1], 'code' );
+  can_ok( $t_reply->[1], 'message' );
+  ok( defined( $t_reply->[1]->message() ),
+      'error after EXEC; \'on_reply\' used; nested error message' );
+  is( $t_reply->[1]->code(), E_OPRN_ERROR,
+      'error after EXEC; \'on_reply\' used; nested error message' );
 
   return;
 }
@@ -427,23 +1146,24 @@ sub t_error_after_exec {
 sub t_quit {
   my $redis = shift;
 
-  my $t_data;
+  my $t_reply;
 
   ev_loop(
     sub {
       my $cv = shift;
 
-      $redis->quit( {
-        on_done => sub {
-          $t_data = shift;
-          $cv->send();
-        },
-      } );
+      $redis->quit(
+        { on_done => sub {
+            $t_reply = shift;
+            $cv->send();
+          },
+        }
+      );
     }
   );
 
-  is( $t_data, 'OK', 'QUIT; status reply;' );
-  ok( $t_is_disconn, 'disconnected' );
+  is( $t_reply, 'OK', 'QUIT; status reply; disconnect' );
+  ok( $T_IS_DISCONN, 'on_disconnect' );
 
   return;
 }

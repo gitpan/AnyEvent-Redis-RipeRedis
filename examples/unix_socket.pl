@@ -11,13 +11,15 @@ my $cv = AE::cv();
 my $redis;
 $redis = AnyEvent::Redis::RipeRedis->new(
   host => 'unix/',
-  port => '/tmp/redis.sock',
+  port => '/var/run/redis/redis.sock',
   password => 'yourpass',
   connection_timeout => 5,
   read_timeout => 5,
+
   on_connect => sub {
     print "Connected to Redis server\n";
   },
+
   on_disconnect => sub {
     print "Disconnected from Redis server\n";
   },
@@ -26,12 +28,20 @@ $redis = AnyEvent::Redis::RipeRedis->new(
 my $timer;
 $timer = AE::timer( 0, 1,
   sub {
-    $redis->incr( 'foo', {
-      on_done => sub {
-        my $data = shift;
-        print "$data\n";
+    $redis->incr( 'foo',
+      sub {
+        my $reply   = shift;
+        my $err_msg = shift;
+
+        if ( defined( $err_msg ) ) {
+          warn $err_msg;
+
+          return;
+        }
+
+        print "$reply\n";
       },
-    } );
+    );
   },
 );
 
