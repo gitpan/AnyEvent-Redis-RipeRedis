@@ -3,10 +3,10 @@ abstract: 'Flexible non-blocking Redis client with reconnect feature'
 author:
   - 'Eugene Ponizovsky <ponizovsky@gmail.com>'
 build_requires:
-  Test::Fatal: 0
-  Test::More: 0
-  Test::RedisServer: 0
-  Test::TCP: 0
+  Test::Fatal: 0.013
+  Test::More: 0.99
+  Test::RedisServer: 0.14
+  Test::TCP: 2.02
 configure_requires:
   ExtUtils::MakeMaker: 6.82
 dynamic_config: 1
@@ -32,4 +32,4 @@ resources:
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.302
+version: 1.303
