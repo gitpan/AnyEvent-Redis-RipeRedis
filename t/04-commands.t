@@ -1024,24 +1024,23 @@ sub t_oprn_error_mth2 {
 sub t_default_on_error {
   my $redis = shift;
 
-  local %SIG;
-
+  my $cv;
   my $t_err_msg;
+
+  local $SIG{__WARN__} = sub {
+    $t_err_msg = shift;
+
+    chomp( $t_err_msg );
+    $cv->send();
+  };
 
   ev_loop(
     sub {
-      my $cv = shift;
+      $cv = shift;
 
-      $SIG{__WARN__} = sub {
-        $t_err_msg = shift;
-        chomp( $t_err_msg );
-        $cv->send();
-      };
       $redis->set(); # missing argument
     }
   );
-
-  undef $SIG{__WARN__};
 
   ok( defined $t_err_msg, "Default 'on_error' callback" );
 
@@ -1086,7 +1085,7 @@ sub t_error_after_exec_mth1 {
       'error after EXEC; \'on_error\' used;' );
   can_ok( $t_reply->[1], 'code' );
   can_ok( $t_reply->[1], 'message' );
-  ok( defined $t_reply->[1]->message( ),
+  ok( defined $t_reply->[1]->message(),
       'error after EXEC; \'on_error\' used; nested error message' );
   is( $t_reply->[1]->code(), E_OPRN_ERROR,
       'error after EXEC; \'on_error\' used; nested error message' );
@@ -1134,7 +1133,7 @@ sub t_error_after_exec_mth2 {
       'error after EXEC; \'on_reply\' used;' );
   can_ok( $t_reply->[1], 'code' );
   can_ok( $t_reply->[1], 'message' );
-  ok( defined $t_reply->[1]->message( ),
+  ok( defined $t_reply->[1]->message(),
       'error after EXEC; \'on_reply\' used; nested error message' );
   is( $t_reply->[1]->code(), E_OPRN_ERROR,
       'error after EXEC; \'on_reply\' used; nested error message' );
