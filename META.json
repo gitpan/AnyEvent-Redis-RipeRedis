@@ -30,7 +30,7 @@
       },
       "configure" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : "6.82"
+            "ExtUtils::MakeMaker" : "6.64"
          }
       },
       "runtime" : {
@@ -57,5 +57,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.321"
+   "version" : "1.330"
 }

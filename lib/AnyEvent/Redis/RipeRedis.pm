@@ -34,7 +34,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.321';
+our $VERSION = '1.330';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -123,7 +123,7 @@ my %SUB_MSG_TYPES = (
 
 my %SPECIAL_CMDS = (
   %SUB_UNSUB_CMDS,
-  exec => 1,
+  exec  => 1,
   multi => 1,
 );
 
@@ -519,20 +519,17 @@ sub _get_reply_cb {
   weaken( $self );
 
   return sub {
-    my $reply    = shift;
-    my $err_code = shift;
-
-    if ( $err_code ) {
-      $self->_handle_error_reply( $reply, $err_code );
+    if ( defined $_[1] ) {
+      $self->_handle_error_reply( @_ );
     }
     elsif (
-      %{$self->{_subs}} and ref( $reply ) eq 'ARRAY'
-        and exists $SUB_MSG_TYPES{ $reply->[0] }
+      %{$self->{_subs}} and ref( $_[0] ) eq 'ARRAY'
+        and exists $SUB_MSG_TYPES{ $_[0][0] }
         ) {
-      $self->_handle_pub_message( $reply );
+      $self->_handle_pub_message( $_[0] );
     }
     else {
-      $self->_handle_success_reply( $reply );
+      $self->_handle_success_reply( $_[0] );
     }
 
     return;
@@ -726,8 +723,8 @@ sub _unshift_read {
     weaken( $self );
 
     $reply_cb = sub {
-      my $reply      = shift;
-      my $err_code   = shift;
+      my $reply    = shift;
+      my $err_code = shift;
 
       if ( defined $err_code ) {
         $has_err = 1;
@@ -772,7 +769,6 @@ sub _unshift_read {
 ####
 sub _handle_success_reply {
   my __PACKAGE__ $self = shift;
-  my $reply = shift;
 
   my $cmd = $self->{_processing_queue}[0];
 
@@ -790,18 +786,18 @@ sub _handle_success_reply {
     }
 
     if ( exists $SUB_CMDS{ $cmd->{keyword} } ) {
-      $self->{_subs}{ $reply->[1] } = $cmd->{on_message};
+      $self->{_subs}{ $_[0][1] } = $cmd->{on_message};
     }
     else {
-      delete( $self->{_subs}{ $reply->[1] } );
+      delete( $self->{_subs}{ $_[0][1] } );
     }
 
-    shift( @{$reply} );
+    shift( @{$_[0]} );
     if ( defined $cmd->{on_done} ) {
-      $cmd->{on_done}->( @{$reply} );
+      $cmd->{on_done}->( @{$_[0]} );
     }
     elsif ( defined $cmd->{on_reply} ) {
-      $cmd->{on_reply}->( $reply );
+      $cmd->{on_reply}->( $_[0] );
     }
 
     return;
@@ -809,15 +805,18 @@ sub _handle_success_reply {
 
   shift( @{$self->{_processing_queue}} );
 
-  if ( $cmd->{keyword} eq 'quit' ) {
+  if ( $cmd->{keyword} eq 'select' ) {
+    $self->{database} = $cmd->{args}[0];
+  }
+  elsif ( $cmd->{keyword} eq 'quit' ) {
     $self->_disconnect();
   }
 
   if ( defined $cmd->{on_done} ) {
-    $cmd->{on_done}->( $reply );
+    $cmd->{on_done}->( $_[0] );
   }
   elsif ( defined $cmd->{on_reply} ) {
-    $cmd->{on_reply}->( $reply );
+    $cmd->{on_reply}->( $_[0] );
   }
 
   return;
@@ -826,8 +825,6 @@ sub _handle_success_reply {
 ####
 sub _handle_error_reply {
   my __PACKAGE__ $self = shift;
-  my $reply    = shift;
-  my $err_code = shift;
 
   my $cmd = shift( @{$self->{_processing_queue}} );
 
@@ -839,7 +836,7 @@ sub _handle_error_reply {
     return;
   }
 
-  if ( $err_code == E_NO_SCRIPT and exists $cmd->{script} ) {
+  if ( $_[1] == E_NO_SCRIPT and exists $cmd->{script} ) {
     $cmd->{keyword} = 'eval';
     $cmd->{args}[0] = $cmd->{script};
 
@@ -849,13 +846,13 @@ sub _handle_error_reply {
   }
 
   # Condition for EXEC command and for some Lua scripts
-  if ( ref( $reply ) eq 'ARRAY' ) {
+  if ( ref( $_[0] ) eq 'ARRAY' ) {
     $self->_handle_cmd_error( $cmd,
         "Operation '$cmd->{keyword}' completed with errors.",
-        $err_code, $reply );
+        @_[ 1, 0 ] );
   }
   else {
-    $self->_handle_cmd_error( $cmd, $reply, $err_code );
+    $self->_handle_cmd_error( $cmd, @_ );
   }
 
   return;
@@ -864,24 +861,23 @@ sub _handle_error_reply {
 ####
 sub _handle_pub_message {
   my __PACKAGE__ $self = shift;
-  my $reply = shift;
 
-  my $msg_cb = $self->{_subs}{ $reply->[1] };
+  my $msg_cb = $self->{_subs}{ $_[0][1] };
 
   if ( !defined $msg_cb ) {
     $self->_disconnect(
         'Don\'t known how process published message.'
-            . " Unknown channel or pattern '$reply->[1]'.",
+            . " Unknown channel or pattern '$_[0][1]'.",
         E_UNEXPECTED_DATA );
 
     return;
   }
 
-  if ( $reply->[0] eq 'message' ) {
-    $msg_cb->( @{$reply}[ 1, 2 ] );
+  if ( $_[0][0] eq 'message' ) {
+    $msg_cb->( @{$_[0]}[ 1, 2 ] );
   }
   else {
-    $msg_cb->( @{$reply}[ 2, 3, 1 ] );
+    $msg_cb->( @{$_[0]}[ 2, 3, 1 ] );
   }
 
   return;
@@ -1212,13 +1208,15 @@ Server port (default: 6379)
 
 =item password
 
-If the password is specified, then the C<AUTH> command is sent immediately to
-the server after every connection.
+If the password is specified, then the C<AUTH> command is sent to the server
+after connection.
 
 =item database
 
 Database index. If the index is specified, then the client is switched to
-the specified database immediately after every connection.
+the specified database after connection. You can also switch to another database
+after connection by using C<SELECT> command. The client remembers last selected
+database after reconnection.
 
 The default database index is C<0>.
 
@@ -2010,7 +2008,7 @@ the C<on_disconnect> callback to avoid an unexpected behavior.
 
 =head2 disconnect()
 
-The method for synchronous disconnection. Not completed operations will be aborted.
+The method for synchronous disconnection. Uncompleted operations will be aborted.
 
   $redis->disconnect();
 

@@ -8,7 +8,7 @@ build_requires:
   Test::RedisServer: 0.14
   Test::TCP: 2.02
 configure_requires:
-  ExtUtils::MakeMaker: 6.82
+  ExtUtils::MakeMaker: 6.64
 dynamic_config: 1
 generated_by: 'ExtUtils::MakeMaker version 6.82, CPAN::Meta::Converter version 2.132830'
 license: perl
@@ -32,4 +32,4 @@ resources:
   homepage: https://github.com/iph0/AnyEvent-Redis-RipeRedis
   license: http://dev.perl.org/licenses/
   repository: https://github.com/iph0/AnyEvent-Redis-RipeRedis
-version: 1.321
+version: 1.330
