@@ -15,6 +15,7 @@ use fields qw(
   connection_timeout
   read_timeout
   reconnect
+  autocork
   encoding
   on_connect
   on_disconnect
@@ -34,7 +35,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.36';
+our $VERSION = '1.37_01';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -169,6 +170,7 @@ sub new {
   }
   $self->{reconnect} = $params->{reconnect};
 
+  $self->{autocork} = $params->{autocork};
   $self->encoding( $params->{encoding} );
 
   $self->{on_connect}       = $params->{on_connect};
@@ -277,6 +279,18 @@ sub selected_database {
   return $self->{database};
 }
 
+####
+sub autocork {
+  my __PACKAGE__ $self = shift;
+
+  if ( @_ ) {
+    $self->{autocork} = shift;
+    $self->{_handle}->autocork( $self->{autocork} );
+  }
+
+  return $self->{autocork};
+}
+
 # Generate more accessors
 {
   no strict 'refs';
@@ -323,6 +337,7 @@ sub _connect {
 
   $self->{_handle} = AnyEvent::Handle->new(
     connect          => [ $self->{host}, $self->{port} ],
+    autocork         => $self->{autocork},
     on_prepare       => $self->_get_prepare_cb(),
     on_connect       => $self->_get_connect_cb(),
     on_connect_error => $self->_get_connect_error_cb(),
@@ -996,9 +1011,9 @@ sub _abort_all {
 ####
 sub AUTOLOAD {
   our $AUTOLOAD;
-  my $cmd_keyword = $AUTOLOAD;
-  $cmd_keyword =~ s/^.+:://;
-  $cmd_keyword = lc( $cmd_keyword );
+  my $method = $AUTOLOAD;
+  $method =~ s/^.+:://;
+  my $cmd_keyword = lc( $method );
 
   my $sub = sub {
     my __PACKAGE__ $self = shift;
@@ -1024,7 +1039,7 @@ sub AUTOLOAD {
 
   do {
     no strict 'refs';
-    *{$cmd_keyword} = $sub;
+    *{$method} = $sub;
   };
 
   goto &{$sub};
@@ -1265,9 +1280,11 @@ Not set by default.
 
 =item lazy
 
-If this parameter is set, then the connection establishes, when you will send
-the first command to the server. By default the connection establishes after
-calling of the C<new> method.
+If enabled, the connection establishes at time, when you will send the first
+command to the server. By default the connection establishes after calling of
+the C<new> method.
+
+Disabled by default.
 
 =item reconnect
 
@@ -1278,7 +1295,17 @@ C<on_error> callback. If you need several attempts of the reconnection, just
 retry a command from the C<on_error> callback as many times, as you need. This
 feature made the client more responsive.
 
-By default is TRUE.
+Enabled by default.
+
+=item autocork
+
+When enabled, writes to socket will always be queued till the next event loop
+iteration. This is efficient when you do many operations per iteration, but less
+efficient when you do a single operation only per iteration (or when the write
+buffer often is full). It also increases operation latency. See L<AnyEvent::Handle>
+for more info.
+
+Disabled by default.
 
 =item encoding
 
@@ -2058,6 +2085,11 @@ Get or set the C<read_timeout> of the client.
 =head2 reconnect( [ $boolean ] )
 
 Enable or disable reconnection mode of the client.
+
+=head2 autocork( [ $boolean ] )
+
+Enables or disables the current autocork behaviour (see C<autocork> constructor
+argument). Changes will only take effect on the next write.
 
 =head2 encoding( [ $enc_name ] )
 
