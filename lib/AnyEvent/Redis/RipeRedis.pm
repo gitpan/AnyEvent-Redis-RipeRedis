@@ -35,7 +35,7 @@ use fields qw(
   _subs
 );
 
-our $VERSION = '1.37_03';
+our $VERSION = '1.37_04';
 
 use AnyEvent;
 use AnyEvent::Handle;
@@ -658,7 +658,7 @@ sub _push_write {
   $cmd_str = '*' . ( scalar( @{$cmd->{args}} ) + 1 ) . EOL . $cmd_str;
 
   my $hdl = $self->{_handle};
-  if ( !@{$self->{_processing_queue}} ) {
+  if ( defined $self->{read_timeout} and !@{$self->{_processing_queue}} ) {
     $hdl->rtimeout_reset();
     $hdl->rtimeout( $self->{read_timeout} );
   }
@@ -821,6 +821,7 @@ sub _handle_success_reply {
     else {
       delete( $self->{_subs}{ $_[0][0] } );
     }
+
     if ( defined $cmd->{on_done} ) {
       $cmd->{on_done}->( @{$_[0]} );
     }
