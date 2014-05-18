@@ -1,10 +1,10 @@
 {
-   "abstract" : "Flexible non-blocking Redis client with reconnect feature",
+   "abstract" : "Flexible non-blocking Redis client with reconnect",
    "author" : [
       "Eugene Ponizovsky <ponizovsky@gmail.com>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.82, CPAN::Meta::Converter version 2.132830",
+   "generated_by" : "ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.133380",
    "license" : [
       "perl_5"
    ],
@@ -44,7 +44,7 @@
          }
       }
    },
-   "release_status" : "stable",
+   "release_status" : "testing",
    "resources" : {
       "bugtracker" : {
          "web" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis/issues"
@@ -57,5 +57,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.38"
+   "version" : "1.39_01"
 }
