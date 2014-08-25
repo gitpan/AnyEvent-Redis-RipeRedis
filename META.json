@@ -44,7 +44,7 @@
          }
       }
    },
-   "release_status" : "stable",
+   "release_status" : "testing",
    "resources" : {
       "bugtracker" : {
          "web" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis/issues"
@@ -57,5 +57,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.40"
+   "version" : "1.41_01"
 }
