@@ -6,6 +6,7 @@ use Test::More;
 use AnyEvent::Redis::RipeRedis qw( :err_codes );
 use Digest::SHA qw( sha1_hex );
 use Scalar::Util qw( weaken );
+use version 0.77;
 require 't/test_helper.pl';
 
 my $SERVER_INFO = run_redis_instance();
@@ -17,7 +18,7 @@ my $REDIS = AnyEvent::Redis::RipeRedis->new(
   port => $SERVER_INFO->{port},
 );
 my $ver = get_redis_version( $REDIS );
-if ( $ver < 2.00600 ) {
+if ( $ver < version->parse( 'v2.6' ) ) {
   plan skip_all => 'redis-server 2.6 or higher is required for this test';
 }
 plan tests => 29;
@@ -70,7 +71,7 @@ LUA
     }
   );
 
-  my $t_npref = 'no script; \'on_error\' used';
+  my $t_npref = "no script; 'on_error' used";
   like( $t_err_msg, qr/^NOSCRIPT/, "$t_npref; error message" );
   is( $t_err_code, E_NO_SCRIPT, "$t_npref; error code" );
 
@@ -117,7 +118,7 @@ LUA
     }
   );
 
-  is_deeply( \@t_data_buf, [ qw( 42 57 ) ], 'eval_cached; \'on_done\' used' );
+  is_deeply( \@t_data_buf, [ qw( 42 57 ) ], "eval_cached; 'on_done' used" );
 
   return;
 }
@@ -177,7 +178,7 @@ LUA
     }
   );
 
-  is_deeply( \@t_data_buf, [ qw( 42 57 ) ], 'eval_cached; \'on_reply\' used' );
+  is_deeply( \@t_data_buf, [ qw( 42 57 ) ], "eval_cached; 'on_reply' used" );
 
   return;
 }
@@ -221,7 +222,7 @@ LUA
         'dar',
         [ qw( loo zar ) ]
       ]
-    ], 'eval_cached; multi-bulk; \'on_done\' used' );
+    ], "eval_cached; multi-bulk; 'on_done' used" );
 
   return;
 }
@@ -264,7 +265,7 @@ LUA
         'dar',
         [ qw( loo zar ) ]
       ]
-    ], 'eval_cached; multi-bulk; \'on_reply\' used' );
+    ], "eval_cached; multi-bulk; 'on_reply' used" );
 
   return;
 }
@@ -296,7 +297,7 @@ LUA
     }
   );
 
-  my $t_npref = 'eval_cached; error reply; \'on_error\' used';
+  my $t_npref = "eval_cached; error reply; 'on_error' used";
   is( $t_err_msg, 'ERR Something wrong.', "$t_npref; error message" );
   is( $t_err_code, E_OPRN_ERROR, "$t_npref; error code" );
 
@@ -333,7 +334,7 @@ LUA
     }
   );
 
-  my $t_npref = 'eval_cached; error reply; \'on_reply\' used';
+  my $t_npref = "eval_cached; error reply; 'on_reply' used";
   is( $t_err_msg, 'ERR Something wrong.', "$t_npref; error message" );
   is( $t_err_code, E_OPRN_ERROR, "$t_npref; error code" );
 
@@ -370,8 +371,8 @@ LUA
     }
   );
 
-  my $t_npref = 'errors in multi-bulk reply; \'on_error\' used;';
-  is( $t_err_msg, 'Operation \'eval\' completed with errors.',
+  my $t_npref = "errors in multi-bulk reply; 'on_error' used";
+  is( $t_err_msg, "Operation 'eval' completed with errors.",
       "$t_npref; error message" );
   is( $t_err_code, E_OPRN_ERROR, "$t_npref; error code" );
 
@@ -422,8 +423,8 @@ LUA
     }
   );
 
-  my $t_npref = 'errors in multi-bulk reply; \'on_reply\' used;';
-  is( $t_err_msg, 'Operation \'eval\' completed with errors.',
+  my $t_npref = "errors in multi-bulk reply; 'on_reply' used";
+  is( $t_err_msg, "Operation 'eval' completed with errors.",
       "$t_npref; error message" );
   is( $t_err_code, E_OPRN_ERROR, "$t_npref; error code" );
 

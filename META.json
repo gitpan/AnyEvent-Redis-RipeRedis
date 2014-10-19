@@ -25,7 +25,8 @@
             "Test::Fatal" : "0.013",
             "Test::More" : "0.98",
             "Test::RedisServer" : "0.14",
-            "Test::TCP" : "2.02"
+            "Test::TCP" : "2.02",
+            "version" : "0.77"
          }
       },
       "configure" : {
@@ -44,7 +45,7 @@
          }
       }
    },
-   "release_status" : "stable",
+   "release_status" : "testing",
    "resources" : {
       "bugtracker" : {
          "web" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis/issues"
@@ -57,5 +58,5 @@
          "url" : "https://github.com/iph0/AnyEvent-Redis-RipeRedis"
       }
    },
-   "version" : "1.42"
+   "version" : "1.43_01"
 }
